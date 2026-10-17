@@ -69,8 +69,10 @@ unset _CALLER _k _v _line
 : "${KV_CACHE_MEMORY_BYTES=13958643712}"   # 13 GiB per rank: 2.67M KV tokens at 1M (measured); set empty to profile
 : "${GPU_MEMORY_UTILIZATION:=0.80}"
 : "${MOE_MODE:=ep}"                     # ep: TP4 + EP4 (96 experts/rank) | tp: MoE tensor-parallel (EP1)
+: "${MOE_BACKEND:=marlin}"              # MXFP4 expert kernel: marlin | deep_gemm | humming | auto
 : "${DSPARK:=1}"
 : "${NUM_SPECULATIVE_TOKENS:=3}"
+: "${DRAFT_SAMPLE_METHOD:=probabilistic}"   # DSpark drafter sampling: probabilistic | greedy
 : "${EAGER:=0}"
 : "${COMPILATION_CONFIG:=}"
 : "${TEXT_ONLY:=0}"
@@ -196,6 +198,13 @@ serve_args() {   # serve_args RANK: the `vllm` argv after the image name (the im
     tp) ;;
     *) die "MOE_MODE must be ep or tp" ;;
   esac
+  # MXFP4 expert kernel. Marlin (W4A16: MXFP4 weights, BF16 activations) measured 15-40% faster decode than vLLM's
+  # auto pick on sm_121 (DeepGEMM MXFP4 with FP8 activations); the DSpark drafter inherits the same backend.
+  case $MOE_BACKEND in
+    auto) ;;
+    marlin|deep_gemm|humming) printf '%s\n' --moe-backend "$MOE_BACKEND" ;;
+    *) die "MOE_BACKEND must be marlin, deep_gemm, humming or auto" ;;
+  esac
   if is_true "$PREFIX_CACHING"; then echo --enable-prefix-caching; else echo --no-enable-prefix-caching; fi
   if is_true "$TEXT_ONLY"; then echo --language-model-only; else printf '%s\n' --mm-encoder-tp-mode data; fi
   if is_true "$EAGER"; then
@@ -211,7 +220,9 @@ serve_args() {   # serve_args RANK: the `vllm` argv after the image name (the im
     printf '%s\n' --compilation-config "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"cudagraph_capture_sizes\":[$sizes]}"
   fi
   if is_true "$DSPARK"; then
-    spec=$(printf '{"method":"dspark","num_speculative_tokens":%s,"draft_sample_method":"probabilistic","rejection_sample_method":"block"}' "$NUM_SPECULATIVE_TOKENS")
+    case $DRAFT_SAMPLE_METHOD in probabilistic|greedy) ;; *) die "DRAFT_SAMPLE_METHOD must be probabilistic or greedy" ;; esac
+    spec=$(printf '{"method":"dspark","num_speculative_tokens":%s,"draft_sample_method":"%s","rejection_sample_method":"block"}' \
+      "$NUM_SPECULATIVE_TOKENS" "$DRAFT_SAMPLE_METHOD")
     printf '%s\n' --speculative-config "$spec"
   fi
   if [[ -n $EXTRA_VLLM_ARGS ]]; then local -a extra; read -r -a extra <<<"$EXTRA_VLLM_ARGS"; printf '%s\n' "${extra[@]}"; fi

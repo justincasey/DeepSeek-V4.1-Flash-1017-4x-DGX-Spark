@@ -429,25 +429,33 @@ def main() -> int:
     p.add_argument("--model", default="deepseek-v4.1-flash")
     p.add_argument("--only", default="")
     p.add_argument("--long-tokens", type=int, default=16000)
+    p.add_argument("--xfail", action="append", default=[], metavar="CASE:REASON",
+                   help="documented known limit: the case still runs and is reported XFAIL (or XPASS), not FAIL")
     ARGS = p.parse_args()
     global MAX_MODEL_LEN
     status, models = call("GET", "/models")
     if status == 200:
         MAX_MODEL_LEN = next((m.get("max_model_len") for m in models["data"] if m["id"] == ARGS.model), None) or MAX_MODEL_LEN
     wanted = {s for s in ARGS.only.split(",") if s}
-    failed = 0
+    xfail = dict(x.split(":", 1) if ":" in x else (x, "known limit") for x in ARGS.xfail)
+    failed = xfailed = 0
     for fn in CASES:
         if wanted and fn.__name__ not in wanted:
             continue
         t = time.time()
         try:
             fn()
-            print(f"PASS {fn.__name__} ({time.time() - t:.1f}s)")
+            tag = "XPASS" if fn.__name__ in xfail else "PASS"
+            print(f"{tag} {fn.__name__} ({time.time() - t:.1f}s)")
         except Exception as e:  # noqa: BLE001 - every failure is reported, the suite keeps going
-            failed += 1
             detail = str(e) if isinstance(e, Fail) else traceback.format_exc(limit=2).strip()
-            print(f"FAIL {fn.__name__} ({time.time() - t:.1f}s): {detail}")
-    print(f"{'OK' if not failed else 'FAILED'}: {failed} failing case(s)")
+            if fn.__name__ in xfail:
+                xfailed += 1
+                print(f"XFAIL {fn.__name__} ({time.time() - t:.1f}s) [{xfail[fn.__name__]}]: {detail}")
+            else:
+                failed += 1
+                print(f"FAIL {fn.__name__} ({time.time() - t:.1f}s): {detail}")
+    print(f"{'OK' if not failed else 'FAILED'}: {failed} failing case(s), {xfailed} expected failure(s)")
     return 1 if failed else 0
 
 
