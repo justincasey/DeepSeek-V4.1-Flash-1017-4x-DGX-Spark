@@ -81,6 +81,12 @@ c=$(MOE_MODE=tp serve 0) || bad "MOE_MODE=tp print-serve failed"
 has "$c" --enable-expert-parallel && bad "MOE_MODE=tp still enables EP" || ok "MOE_MODE=tp is EP1"
 c=$(TEXT_ONLY=1 serve 0) || bad "TEXT_ONLY=1 print-serve failed"
 has "$c" --language-model-only && ok "TEXT_ONLY=1 drops the vision encoder" || bad "TEXT_ONLY"
+# CUDA graphs: decode-only, one capture size per batch shape (each sequence verifies k+1 rows with DSpark)
+c=$(serve 0) || bad "default print-serve failed"
+has "$c" 'FULL_DECODE_ONLY' && has "$c" 'cudagraph_capture_sizes\":\[4\,8\,12\,16\]' \
+  && ok "graph capture sizes follow MAX_NUM_SEQS x (k+1)" || bad "derived compilation config: $(grep -o 'compilation-config [^ ]*' <<<"$c")"
+c=$(EAGER=1 serve 0) || bad "EAGER=1 print-serve failed"
+has "$c" --enforce-eager && ! has "$c" --compilation-config && ok "EAGER=1 drops CUDA graphs" || bad "EAGER handling"
 # invalid config must fail without printing a partial command
 for bogus in MXFP8_BACKEND=bogus MOE_MODE=bogus; do
   if c=$(env "$bogus" ./dsv41.sh print-serve 0 2>/dev/null); then bad "$bogus print-serve succeeded"

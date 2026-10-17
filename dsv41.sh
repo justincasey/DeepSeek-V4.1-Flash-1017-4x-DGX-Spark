@@ -66,7 +66,7 @@ unset _CALLER _k _v _line
 : "${MAX_MODEL_LEN:=1048576}"
 : "${MAX_NUM_SEQS:=4}"
 : "${MAX_NUM_BATCHED_TOKENS:=4096}"
-: "${KV_CACHE_MEMORY_BYTES:=}"
+: "${KV_CACHE_MEMORY_BYTES=13958643712}"   # 13 GiB per rank: 2.67M KV tokens at 1M (measured); set empty to profile
 : "${GPU_MEMORY_UTILIZATION:=0.80}"
 : "${MOE_MODE:=ep}"                     # ep: TP4 + EP4 (96 experts/rank) | tp: MoE tensor-parallel (EP1)
 : "${DSPARK:=1}"
@@ -198,8 +198,18 @@ serve_args() {   # serve_args RANK: the `vllm` argv after the image name (the im
   esac
   if is_true "$PREFIX_CACHING"; then echo --enable-prefix-caching; else echo --no-enable-prefix-caching; fi
   if is_true "$TEXT_ONLY"; then echo --language-model-only; else printf '%s\n' --mm-encoder-tp-mode data; fi
-  is_true "$EAGER" && echo --enforce-eager
-  [[ -n $COMPILATION_CONFIG ]] && printf '%s\n' --compilation-config "$COMPILATION_CONFIG"
+  if is_true "$EAGER"; then
+    echo --enforce-eager
+  elif [[ -n $COMPILATION_CONFIG ]]; then
+    printf '%s\n' --compilation-config "$COMPILATION_CONFIG"
+  else
+    # Decode-only CUDA graphs (Engram lookups are hoisted out of the graph) at every batch shape decode can take:
+    # each sequence verifies k+1 rows with DSpark, one row without.
+    local rows=1 i sizes=""
+    is_true "$DSPARK" && rows=$((NUM_SPECULATIVE_TOKENS + 1))
+    for (( i = 1; i <= MAX_NUM_SEQS; i++ )); do sizes+="${sizes:+,}$((i * rows))"; done
+    printf '%s\n' --compilation-config "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\",\"cudagraph_capture_sizes\":[$sizes]}"
+  fi
   if is_true "$DSPARK"; then
     spec=$(printf '{"method":"dspark","num_speculative_tokens":%s,"draft_sample_method":"probabilistic","rejection_sample_method":"block"}' "$NUM_SPECULATIVE_TOKENS")
     printf '%s\n' --speculative-config "$spec"
