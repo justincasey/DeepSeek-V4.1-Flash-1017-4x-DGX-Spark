@@ -56,6 +56,19 @@ for s in tools/engram/engram_hoist.py tools/engram/engram_io_fix.py \
   echo "-- $s"
   python3 "$UP/$s"
 done
+# The upstream scripts print and return 0 on "already patched", so assert each unconditional marker landed.
+# (engram_io_fix.py's engram.py head-loop vectorization is skipped by design when its anchor moves.)
+while read -r rel mark; do
+  grep -qF -- "$mark" "$VLLM/$rel" || { echo "upstream marker '$mark' missing from $VLLM/$rel" >&2; exit 1; }
+done <<'EOF'
+models/deepseek_v4_1/nvidia/flashinfer_sparse.py _DSPARK_NONCAUSAL_PASSTHROUGH
+models/deepseek_v4_1/nvidia/model.py _ENGHOIST
+models/deepseek_v4_1/nvidia/model_state.py _ENGHOIST
+models/deepseek_v4_1/common/engram_disk.py _ENGFAST w63
+model_executor/model_loader/ep_weight_filter.py _EPFILTER
+models/deepseek_v4_1/nvidia/dspark.py _EPGATE
+model_executor/layers/sparse_attn_indexer.py _PERSISTENT_TOPK_SM12X
+EOF
 
 echo "== compile and import checks"
 python3 - <<'PY'

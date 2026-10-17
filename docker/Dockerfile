@@ -32,6 +32,10 @@ COPY docker/encoding-1017.py /opt/dsv41/encoding-1017.py
 RUN python3 /opt/dsv41/encoding-1017.py --repo "$MODEL_REPO" --revision "$MODEL_REVISION" \
       --manifest /opt/dsv41/checkpoint.sha256
 
+# GB10 serving knobs vLLM does not expose (DSV41_MXFP8_BACKEND).
+COPY docker/gb10-tuning.py /opt/dsv41/gb10-tuning.py
+RUN python3 /opt/dsv41/gb10-tuning.py
+
 LABEL org.opencontainers.image.title="dsv41-1017-spark" \
       ai.dsv41.base="${BASE_IMAGE}" \
       ai.dsv41.upstream="${UPSTREAM_REPO}@${UPSTREAM_SHA}"

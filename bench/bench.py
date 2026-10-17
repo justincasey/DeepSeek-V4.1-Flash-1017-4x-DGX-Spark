@@ -5,7 +5,7 @@
 Runs from the control machine against any OpenAI-compatible vLLM endpoint:
 
   python3 bench/bench.py [--base-url http://192.168.1.121:8000] [--model deepseek-v4.1-flash]
-                         [--api-key K] [--timeout S] <step> [step options] [--out DIR]
+                         [--api-key K | env API_KEY=K] [--timeout S] <step> [step options] [--out DIR]
 
 Steps (each writes results.json + summary.md to --out, default bench/runs/<YYYY-mm-dd-HHMMSS>-<step>/,
 and prints the summary):
@@ -14,9 +14,11 @@ and prints the summary):
            temperature 0, --max-tokens 512. Each cell is a fixed --seconds window (default 30) in which c workers
            issue back-to-back NON-streaming requests; no new request starts after the window closes and the cell
            ends when the last one returns. Aggregate tok/s = sum(usage.completion_tokens) / cell wall time.
-           Per-stream tok/s = median over requests of usage.completion_tokens / request latency (prefill of the
-           short prompt included). TTFT = one separate streaming request per cell, time to the first non-empty
-           content (or reasoning) delta.
+           Per-stream tok/s = median over requests of usage.completion_tokens / request latency, so it includes the
+           short prompt's prefill and any queueing (at c > max_num_seqs requests wait for a slot). TTFT is measured
+           under load: once the c workers have run for 25% of the window, one extra streaming request is sent and
+           timed to its first non-empty content (or reasoning) delta, i.e. the TTFT a new arrival sees while c
+           streams decode (queueing included). Its tokens are not counted in the aggregate.
   prefill  One request per target length (--lengths 4k,...,1M; k=1024, M=1024*1024), sequential, max_tokens 1.
            Prompts are pseudo-random words seeded per length behind a per-run nonce, so nothing hits the prefix
            cache. Reports usage.prompt_tokens, wall time and prompt_tokens / wall time. Lengths above the server's
@@ -230,11 +232,8 @@ def step_decode(cli: Client, a) -> tuple[dict, str, bool]:
                     "temperature": 0, **THINK_OFF}
             if a.ignore_eos:
                 body["ignore_eos"] = True
-            try:
-                tt = cli.ttft(body)
-            except Exception as e:
-                tt = {"ttft_s": None, "error": str(e)}
-            cell = run_window(cli, body, c, a.seconds)
+            cell = run_window(cli, body, c, a.seconds, probe_at=0.25)
+            tt = cell.pop("ttft")
             cell.update(prompt_type=ptype, concurrency=c, ttft=tt)
             ok &= cell["requests"] > 0 and cell["errors"] == 0
             cells.append(cell)
@@ -245,14 +244,16 @@ def step_decode(cli: Client, a) -> tuple[dict, str, bool]:
                         "max_tokens": a.max_tokens, "ignore_eos": a.ignore_eos, "thinking": False,
                         "temperature": 0, "prompts": {t: DECODE_PROMPTS[t] for t in types}},
            "cells": cells}
-    lines = ["## Decode", "", f"Aggregate tok/s (median per-stream tok/s); window {a.seconds}s per cell, "
+    lines = ["## Decode", "", f"Aggregate tok/s (median per-stream tok/s = completion tokens / request latency, "
+             f"prefill and queueing included); window {a.seconds}s per cell, "
              f"max_tokens {a.max_tokens}, thinking off, greedy. Tokens from usage.completion_tokens.", "",
              "| prompt | " + " | ".join(f"c={c}" for c in conc) + " |", "|---|" + "---:|" * len(conc)]
     for ptype in types:
         row = [cell for cell in cells if cell["prompt_type"] == ptype]
         lines.append(f"| {ptype} | " + " | ".join(
             f"{x['agg_tok_s']:.1f} ({x['per_stream_tok_s'] or 0:.1f})" for x in row) + " |")
-    lines += ["", "TTFT (single streaming request per cell, seconds):", "",
+    lines += ["", "TTFT under load (one extra streaming request sent 25% into each cell's window while the c "
+              "workers run; seconds, queueing included):", "",
               "| prompt | " + " | ".join(f"c={c}" for c in conc) + " |", "|---|" + "---:|" * len(conc)]
     for ptype in types:
         row = [cell for cell in cells if cell["prompt_type"] == ptype]
@@ -260,11 +261,23 @@ def step_decode(cli: Client, a) -> tuple[dict, str, bool]:
     return res, "\n".join(lines), ok
 
 
-def run_window(cli: Client, body: dict, c: int, seconds: float) -> dict:
+def run_window(cli: Client, body: dict, c: int, seconds: float, probe_at: float | None = None) -> dict:
+    """c workers send back-to-back requests for `seconds`. With probe_at, one extra streaming request starts at
+    that fraction of the window and its TTFT is returned under "ttft" (measured while the c streams decode)."""
     lock = threading.Lock()
     recs, errors = [], []
     t_start = time.perf_counter()
     deadline = t_start + seconds
+    tt = {}
+
+    def probe():
+        time.sleep(max(0.0, t_start + probe_at * seconds - time.perf_counter()))
+        try:
+            tt.update(cli.ttft(body))
+        except Exception as e:
+            tt.update(ttft_s=None, error=str(e)[:300])
+
+    prober = threading.Thread(target=probe, daemon=True) if probe_at is not None else None
 
     def worker():
         while time.perf_counter() < deadline:
@@ -281,15 +294,23 @@ def run_window(cli: Client, body: dict, c: int, seconds: float) -> dict:
                 time.sleep(0.5)
 
     with cf.ThreadPoolExecutor(max_workers=c) as ex:
-        for f in [ex.submit(worker) for _ in range(c)]:
+        futures = [ex.submit(worker) for _ in range(c)]
+        if prober:
+            prober.start()
+        for f in futures:
             f.result()
     elapsed = time.perf_counter() - t_start
+    if prober:
+        prober.join()
     toks = sum(r["completion_tokens"] for r in recs)
     rates = [r["completion_tokens"] / r["latency_s"] for r in recs if r["latency_s"] > 0]
-    return {"requests": len(recs), "errors": len(errors), "error_samples": errors[:3], "elapsed_s": elapsed,
+    cell = {"requests": len(recs), "errors": len(errors), "error_samples": errors[:3], "elapsed_s": elapsed,
             "completion_tokens": toks, "agg_tok_s": toks / elapsed if elapsed else 0.0,
             "per_stream_tok_s": statistics.median(rates) if rates else None,
             "mean_completion_tokens": toks / len(recs) if recs else None, "records": recs}
+    if prober:
+        cell["ttft"] = tt
+    return cell
 
 
 def fmt_s(v) -> str:

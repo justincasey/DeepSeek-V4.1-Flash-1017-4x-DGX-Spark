@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Server prompt rendering must equal DeepSeek's DeepSeek-V4.1-Flash-1017 reference encoder.
 
-    python3 tests/test_encoding_parity.py --base-url http://192.168.1.121:8000 [--api-key K]
+    python3 tests/test_encoding_parity.py --base-url http://192.168.1.121:8000 [--model NAME] [--api-key K | env API_KEY=K]
 
 Fetches encoding/encoding.py and its golden fixtures from the pinned checkpoint revision (MIT, DeepSeek),
 sha256-checked against config/DeepSeek-V4.1-Flash-1017.sha256. Each case is rendered by the reference encoder;
@@ -109,7 +109,7 @@ def main() -> int:
     p.add_argument("--base-url", required=True, help="server root, e.g. http://host:8000")
     p.add_argument("--revision", default="1bae0e1088993b9b82de08f59de5be5a34e42170")
     p.add_argument("--model", default="deepseek-v4.1-flash")
-    p.add_argument("--api-key", default="")
+    p.add_argument("--api-key", default=os.environ.get("API_KEY", ""), help="default: env API_KEY")
     ARGS = p.parse_args()
 
     with tempfile.TemporaryDirectory() as tmp:

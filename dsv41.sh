@@ -34,8 +34,12 @@ if [[ -f $ROOT/.env ]]; then
     [[ $_line =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
     _k=${BASH_REMATCH[1]} _v=${BASH_REMATCH[2]}
     [[ -n ${_CALLER[$_k]:-} ]] && continue
+    _v=${_v#"${_v%%[![:space:]]*}"}
     if [[ $_v =~ ^\"(.*)\"[[:space:]]*(#.*)?$ || $_v =~ ^\'(.*)\'[[:space:]]*(#.*)?$ ]]; then _v=${BASH_REMATCH[1]}
-    else _v=${_v%%#*}; _v=${_v%"${_v##*[![:space:]]}"}; fi
+    else   # '#' opens a comment only at the start of the value or after whitespace: API_KEY=abc#123 keeps it
+      _v=${_v%%[[:space:]]#*}; [[ $_v == \#* ]] && _v=
+      _v=${_v%"${_v##*[![:space:]]}"}
+    fi
     printf -v "$_k" '%s' "$_v"; export "${_k?}"
   done < "$ROOT/.env"
 fi
@@ -71,6 +75,7 @@ unset _CALLER _k _v _line
 : "${COMPILATION_CONFIG:=}"
 : "${TEXT_ONLY:=0}"
 : "${PREFIX_CACHING:=1}"
+: "${MXFP8_BACKEND:=cutlass}"          # FlashInfer backend for the FP8 dense layers: cutlass | b12x | auto
 : "${EXTRA_VLLM_ARGS:=}"
 : "${EXTRA_DOCKER_ARGS:=}"
 : "${WAIT_TIMEOUT:=2400}"
@@ -90,17 +95,21 @@ die() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
 is_true() { case ${1:-} in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
 
 # remote RANK SCRIPT [VAR=value ...]: run SCRIPT under `bash -s` on one rank with the variables exported.
+# The script travels on ssh's stdin, so it runs as one brace group with stdin from /dev/null: bash parses the
+# whole group before running it, and no child that reads stdin (an inner ssh, docker) can eat the rest of it.
 remote() {
   local r=$1 script=$2 kv prelude="set -euo pipefail"$'\n'; shift 2
   for kv in "$@"; do prelude+="export ${kv%%=*}=$(printf '%q' "${kv#*=}")"$'\n'; done
-  ssh "${SSH_OPTS[@]}" "$SSH_USER@${NODE[$r]}" bash -s <<<"$prelude$script"
+  ssh "${SSH_OPTS[@]}" "$SSH_USER@${NODE[$r]}" bash -s <<<"$prelude{"$'\n'"$script"$'\n'"} </dev/null"
 }
 # every SCRIPT [VAR=value ...]: run on all ranks in parallel; output printed per rank in order, prefixed [rN];
 # fails if any rank fails.
 every() {
   local r rc=0 tmp; tmp=$(mktemp -d)
-  for r in 0 1 2 3; do ( remote "$r" "$@" >"$tmp/$r" 2>&1; echo $? >"$tmp/$r.rc" ) & done
-  wait
+  local -a ep=()
+  # `&& || echo $?` so the rc file is written even though set -e would end the subshell at a failed remote.
+  for r in 0 1 2 3; do ( remote "$r" "$@" >"$tmp/$r" 2>&1 && echo 0 >"$tmp/$r.rc" || echo $? >"$tmp/$r.rc" ) & ep+=($!); done
+  wait "${ep[@]}" || true
   for r in 0 1 2 3; do sed "s/^/[r$r] /" "$tmp/$r"; [[ $(<"$tmp/$r.rc") == 0 ]] || rc=1; done
   rm -rf "$tmp"
   return $rc
@@ -166,9 +175,9 @@ ring_config() {
 }
 
 # ── serve command ───────────────────────────────────────────────────────────────────────────────
-serve_args() {   # serve_args RANK: the vllm serve argv, one argument per line
+serve_args() {   # serve_args RANK: the `vllm` argv after the image name (the image entrypoint is set to vllm)
   local r=$1 spec
-  printf '%s\n' vllm serve "$MODEL_DIR" \
+  printf '%s\n' serve "$MODEL_DIR" \
     --served-model-name "$SERVED_NAME" --host "$HOST" --port "$PORT" \
     --tokenizer-mode deepseek_v41 --reasoning-parser deepseek_v41 \
     --tool-call-parser deepseek_v41 --enable-auto-tool-choice \
@@ -176,8 +185,10 @@ serve_args() {   # serve_args RANK: the vllm serve argv, one argument per line
     --max-model-len "$MAX_MODEL_LEN" --max-num-seqs "$MAX_NUM_SEQS" --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS" \
     --engram-config '{"cpu_offload":false,"disk_backed":true}'
   (( r > 0 )) && echo --headless
-  if [[ -n $KV_CACHE_MEMORY_BYTES ]]; then printf '%s\n' --kv-cache-memory-bytes "$KV_CACHE_MEMORY_BYTES"
-  else printf '%s\n' --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION"; fi
+  # The utilization fraction also gates vLLM's startup free-memory check, so it is always passed; a fixed KV
+  # budget replaces profiling-based KV sizing on top of it.
+  printf '%s\n' --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION"
+  [[ -n $KV_CACHE_MEMORY_BYTES ]] && printf '%s\n' --kv-cache-memory-bytes "$KV_CACHE_MEMORY_BYTES"
   case $MOE_MODE in
     # The ring has no cable between ranks 0-2 and 1-3: expert dispatch must use collectives, never point-to-point.
     ep) printf '%s\n' --enable-expert-parallel --enable-ep-weight-filter --all2all-backend allgather_reducescatter ;;
@@ -192,13 +203,13 @@ serve_args() {   # serve_args RANK: the vllm serve argv, one argument per line
     spec=$(printf '{"method":"dspark","num_speculative_tokens":%s,"draft_sample_method":"probabilistic","rejection_sample_method":"block"}' "$NUM_SPECULATIVE_TOKENS")
     printf '%s\n' --speculative-config "$spec"
   fi
-  [[ -n $API_KEY ]] && printf '%s\n' --api-key "$API_KEY"
   if [[ -n $EXTRA_VLLM_ARGS ]]; then local -a extra; read -r -a extra <<<"$EXTRA_VLLM_ARGS"; printf '%s\n' "${extra[@]}"; fi
   return 0
 }
 docker_args() {  # docker_args RANK: docker run argv (switchless NCCL contract + disk Engram + caches)
   local r=$1 lib=/opt/switchless-nccl/libnccl.so.2
-  printf '%s\n' run -d --name "$CONTAINER" --gpus all --network host --ipc host \
+  case $MXFP8_BACKEND in cutlass|b12x|auto) ;; *) die "MXFP8_BACKEND must be cutlass, b12x or auto (got '$MXFP8_BACKEND')" ;; esac
+  printf '%s\n' run -d --name "$CONTAINER" --entrypoint vllm --gpus all --network host --ipc host \
     --device /dev/infiniband --cap-add IPC_LOCK --ulimit memlock=-1 --ulimit core=0 --ulimit stack=67108864 \
     --shm-size 16g \
     -v "$MODELS_DIR:$MODELS_DIR:ro" \
@@ -212,7 +223,11 @@ docker_args() {  # docker_args RANK: docker run argv (switchless NCCL contract +
     -e NCCL_SOCKET_IFNAME="${MGMT[$r]}" -e GLOO_SOCKET_IFNAME="${MGMT[$r]}" -e VLLM_HOST_IP="${NODE[$r]}" \
     -e VLLM_ENGRAM_DISK_BACKED=1 -e VLLM_ENGRAM_MODEL_DIR="$MODEL_DIR" \
     -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False \
+    -e DSV41_MXFP8_BACKEND="$MXFP8_BACKEND" \
     -e HF_HUB_OFFLINE=1
+  # The key is named, never valued, here: docker copies it from the remote shell's environment (cmd_start sends
+  # it over ssh stdin), so it stays out of every process argv and print-serve. vLLM reads VLLM_API_KEY.
+  if (( r == 0 )) && [[ -n $API_KEY ]]; then printf '%s\n' -e VLLM_API_KEY; fi
   if [[ -n $EXTRA_DOCKER_ARGS ]]; then local -a extra; read -r -a extra <<<"$EXTRA_DOCKER_ARGS"; printf '%s\n' "${extra[@]}"; fi
   echo "$IMAGE"
 }
@@ -304,19 +319,22 @@ PY
     remote "$r" 'mkdir -p "$MODEL_DIR"
       HF_XET_HIGH_PERFORMANCE=1 "$HF_BIN" download "$REPO" --revision "$REV" --local-dir "$MODEL_DIR" $FILES >/dev/null
       echo "rank $RANK: part downloaded"' MODEL_DIR="$MODEL_DIR" HF_BIN="$HF_BIN" REPO="$MODEL_REPO" REV="$MODEL_REVISION" \
-      FILES="$files" RANK="$r" &
+      FILES="$files" RANK="$r" & pids+=($!)
   done
   wait_all "a rank's download failed"
   log "gather on rank 0: 1 -> 0 and 3 -> 0 in parallel, 2 -> 1 -> 0"
-  { ring_copy 1 0 & ring_copy 3 0 & ring_copy 2 1 & wait_all "gather failed"; }
+  ring_copy 1 0 & pids+=($!); ring_copy 3 0 & pids+=($!); ring_copy 2 1 & pids+=($!); wait_all "gather failed"
   ring_copy 1 0
   log "fan out: 0 -> 1 and 0 -> 3 in parallel, then 1 -> 2"
-  { ring_copy 0 1 & ring_copy 0 3 & wait_all "fan-out failed"; }
+  ring_copy 0 1 & pids+=($!); ring_copy 0 3 & pids+=($!); wait_all "fan-out failed"
   ring_copy 1 2
   cmd_verify || die "checksum verification failed"
   log "fetch: checkpoint verified on all four ranks"
 }
-wait_all() { local p rc=0; for p in $(jobs -p); do wait "$p" || rc=1; done; (( rc == 0 )) || die "$1"; }
+# wait_all MSG: wait on the jobs recorded in pids (`job & pids+=($!)`), die with MSG if any failed. Explicit PIDs,
+# not `jobs -p`: a job that already exited is gone from the job table, and its failure would go unseen.
+pids=()
+wait_all() { local p rc=0; for p in "${pids[@]}"; do wait "$p" || rc=1; done; pids=(); (( rc == 0 )) || die "$1"; }
 cable_addr() {  # cable_addr FROM TO: TO's address on the cable it shares with FROM (adjacent ranks only)
   local from=$1 to=$2 net
   if (( to == (from + 1) % 4 )); then net=${LINK[$from]}
@@ -329,7 +347,7 @@ ring_copy() {   # ring_copy FROM TO: rsync FROM's checkpoint tree to TO across t
   [[ -n $ip ]] || die "no cable address from rank $from to rank $to"
   log "rank $from -> rank $to over $ip"
   remote "$from" '
-    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$USER@$IP" mkdir -p "$MODEL_DIR"
+    ssh -n -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$USER@$IP" mkdir -p "$MODEL_DIR"
     rsync -a --whole-file --exclude ".*" "$MODEL_DIR/" "$USER@$IP:$MODEL_DIR/"' USER="$SSH_USER" IP="$ip" MODEL_DIR="$MODEL_DIR"
 }
 verify_rank() {   # verify_rank RANK: sha256 of every pinned file on that rank, 12 files at a time
@@ -350,8 +368,7 @@ cmd_build() {
   rsync -a --delete -e "ssh ${SSH_OPTS[*]}" "$ROOT/docker" "$ROOT/config" "$SSH_USER@$MASTER:$BUILD_DIR/"
   remote 0 'cd "$BUILD_DIR" && docker build -f docker/Dockerfile -t "$IMAGE" . 2>&1 | tail -25' BUILD_DIR="$BUILD_DIR" IMAGE="$IMAGE"
   detect_ring || die "ring detection failed (./dsv41.sh doctor)"
-  ship_image 0 1 & local a=$!; ship_image 0 3 & local b=$!
-  wait "$a" && wait "$b" || die "image ship from rank 0 failed"
+  ship_image 0 1 & pids+=($!); ship_image 0 3 & pids+=($!); wait_all "image ship from rank 0 failed"
   ship_image 1 2
   every 'docker image inspect "$IMAGE" --format "{{.Id}}"' IMAGE="$IMAGE"
 }
@@ -362,7 +379,7 @@ ship_image() {   # ship_image FROM TO: stream the image across the cable between
     IMAGE="$IMAGE" USER="$SSH_USER" IP="$ip"
 }
 
-drop_caches() { every 'sync; sudo -n sysctl -q -w vm.drop_caches=$LEVEL 2>/dev/null || true' LEVEL="${1:-3}" >/dev/null; }
+drop_caches() { every 'sync; sudo -n sysctl -q -w vm.drop_caches=$LEVEL 2>/dev/null || true' LEVEL="${1:-3}"; }
 
 cmd_stop() {
   every 'if docker ps -a --format "{{.Names}}" | grep -qx "$C"; then
@@ -374,16 +391,18 @@ cmd_stop() {
 
 cmd_start() {
   ring_config || die "ring detection failed (./dsv41.sh doctor)"
-  local r running allowed
+  local r running allowed out
   allowed=$(tr ' ' '\n' <<<"$CONTAINER ${ALLOWED_CONTAINERS:-}" | grep . | paste -sd'|' -)
   running=$(every 'docker ps --format "{{.Names}}" | grep -vxE "$A" || true' A="$allowed")
   [[ -z $(sed 's/^\[r[0-9]\] //' <<<"$running" | grep .) ]] || die "other containers are running (./dsv41.sh stop-other, or ALLOWED_CONTAINERS):"$'\n'"$running"
-  cmd_stop >/dev/null
-  drop_caches 3
-  every 'mkdir -p "$D/root-cache" "$D/triton"' D="$CACHE_DIR" >/dev/null
+  out=$(cmd_stop 2>&1) || die "stop before start failed:"$'\n'"$out"
+  out=$(drop_caches 3 2>&1) || die "page cache drop failed:"$'\n'"$out"
+  out=$(every 'mkdir -p "$D/root-cache" "$D/triton"' D="$CACHE_DIR" 2>&1) || die "cannot create $CACHE_DIR:"$'\n'"$out"
   for r in 3 2 1 0; do
     local run; run=$( { docker_args "$r"; serve_args "$r"; } | quoted )
-    remote "$r" "docker $run >/dev/null" && log "rank $r started on ${NODE[$r]}"
+    # The key rides the prelude (ssh stdin); docker_args names it for rank 0 only.
+    remote "$r" "docker $run >/dev/null" VLLM_API_KEY="$API_KEY" || { cmd_stop >/dev/null 2>&1; die "docker run failed on rank $r"; }
+    log "rank $r started on ${NODE[$r]}"
   done
   log "waiting for $URL (up to ${WAIT_TIMEOUT}s; page cache is dropped while the ranks load)"
   local t0=$SECONDS dead
@@ -393,17 +412,19 @@ cmd_start() {
     if [[ -n $dead ]]; then
       echo "$dead"
       for r in 0 1 2 3; do echo "── rank $r"; remote "$r" 'docker logs --tail 40 "$C" 2>&1 || tail -40 "$HOME/$C.prev.log"' C="$CONTAINER" || true; done
-      cmd_stop >/dev/null; die "a rank exited during startup"
+      cmd_stop >/dev/null 2>&1 || true; die "a rank exited during startup"
     fi
-    drop_caches 1
+    drop_caches 1 >/dev/null || log "WARN: drop_caches failed on a rank"
     sleep 10
   done
   die "API not up after ${WAIT_TIMEOUT}s (./dsv41.sh logs)"
 }
 
+# Authorization header via a process-substitution file (curl -H @file), so the key never appears in curl's argv.
+auth_header() { [[ -z $API_KEY ]] || printf 'Authorization: Bearer %s\n' "$API_KEY"; }
 cmd_status() {
   every 'docker ps -a --filter "name=^$C$" --format "{{.Names}} {{.Status}}"; echo "mem_avail_gb=$(awk "/MemAvailable/{print int(\$2/1048576)}" /proc/meminfo)"' C="$CONTAINER"
-  curl -sf -m 5 ${API_KEY:+-H "Authorization: Bearer $API_KEY"} "$URL/v1/models" && echo || echo "API not answering at $URL"
+  curl -sf -m 5 -H @<(auth_header) "$URL/v1/models" && echo || echo "API not answering at $URL"
 }
 
 cmd_logs() {
@@ -413,15 +434,16 @@ cmd_logs() {
 
 cmd_smoke() {
   local out
-  out=$(curl -sf -m 120 "$URL/v1/chat/completions" -H 'Content-Type: application/json' ${API_KEY:+-H "Authorization: Bearer $API_KEY"} \
+  out=$(curl -sf -m 120 "$URL/v1/chat/completions" -H 'Content-Type: application/json' -H @<(auth_header) \
     -d "{\"model\":\"$SERVED_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"What is 17*23? Reply with the integer only.\"}],\"max_tokens\":16,\"temperature\":0,\"chat_template_kwargs\":{\"thinking\":false}}") \
     || die "smoke: request failed"
   grep -q '391' <<<"$out" && log "smoke: OK (17*23=391)" || die "smoke: wrong answer: $out"
 }
 
-cmd_api_test() { python3 "$ROOT/tests/api_conformance.py" --base-url "$URL/v1" --model "$SERVED_NAME" ${API_KEY:+--api-key "$API_KEY"} "$@"; }
-cmd_parity() { python3 "$ROOT/tests/test_encoding_parity.py" --base-url "$URL" --revision "$MODEL_REVISION" ${API_KEY:+--api-key "$API_KEY"}; }
-cmd_bench() { python3 "$ROOT/bench/bench.py" --base-url "$URL" --model "$SERVED_NAME" ${API_KEY:+--api-key "$API_KEY"} "$@"; }
+# The python tools read the key from env API_KEY, so it stays out of argv.
+cmd_api_test() { API_KEY=$API_KEY python3 "$ROOT/tests/api_conformance.py" --base-url "$URL/v1" --model "$SERVED_NAME" "$@"; }
+cmd_parity() { API_KEY=$API_KEY python3 "$ROOT/tests/test_encoding_parity.py" --base-url "$URL" --revision "$MODEL_REVISION" --model "$SERVED_NAME"; }
+cmd_bench() { API_KEY=$API_KEY python3 "$ROOT/bench/bench.py" --base-url "$URL" --model "$SERVED_NAME" "$@"; }
 
 cmd_stop_other() { [[ -n $STOP_OTHER ]] || die "STOP_OTHER is not set (.env.example)"; log "STOP_OTHER"; bash -c "$STOP_OTHER"; }
 cmd_restore_other() {
@@ -430,9 +452,11 @@ cmd_restore_other() {
 }
 
 cmd_print_serve() {
-  local r=${1:?rank}
+  local r=${1:?rank} cmd
   ring_config || die "ring detection failed"
-  echo "docker $( { docker_args "$r"; serve_args "$r"; } | quoted)"
+  # Captured first: a die inside docker_args/serve_args must not leave a partial command on stdout.
+  cmd=$( { docker_args "$r"; serve_args "$r"; } | quoted ) || exit 1
+  echo "docker $cmd"
 }
 
 cmd_help() { sed -n '3,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; }

@@ -4,7 +4,7 @@
 
 stdlib only: runs from the control machine or any node.
 
-    python3 tests/api_conformance.py --base-url http://192.168.1.121:8000/v1 [--api-key K]
+    python3 tests/api_conformance.py --base-url http://192.168.1.121:8000/v1 [--api-key K | env API_KEY=K]
         [--model NAME] [--only case1,case2] [--long-tokens 16000]
 
 Prints one PASS/FAIL line per case and exits non-zero if any case fails. Every case is a
@@ -17,6 +17,8 @@ import argparse
 import base64
 import concurrent.futures as cf
 import json
+import os
+import re
 import struct
 import sys
 import time
@@ -26,6 +28,12 @@ import urllib.request
 import zlib
 
 ARGS: argparse.Namespace
+MAX_MODEL_LEN = 1 << 20   # replaced from /v1/models at start
+
+
+def budget(tokens: int) -> int:
+    """Generation budget that fits the server's context window with room for the prompt."""
+    return max(64, min(tokens, MAX_MODEL_LEN - 1024))
 
 
 class Fail(AssertionError):
@@ -234,7 +242,7 @@ def completions_endpoint():
 
 @case
 def thinking_on_splits_reasoning():
-    out = chat(messages=user("Is 221 prime? Answer yes or no."), max_tokens=4096, temperature=0,
+    out = chat(messages=user("Is 221 prime? Answer yes or no."), max_tokens=budget(4096), temperature=0,
                chat_template_kwargs={"thinking": True})
     m = out["choices"][0]["message"]
     check(len(reasoning_of(m)) > 0, "thinking on but no reasoning content")
@@ -249,7 +257,7 @@ def thinking_off_has_no_reasoning():
 
 @case
 def thinking_streams_reasoning_then_content():
-    ev = stream("/chat/completions", dict(messages=user("What is 12*12?"), max_tokens=2048, temperature=0,
+    ev = stream("/chat/completions", dict(messages=user("What is 12*12?"), max_tokens=budget(2048), temperature=0,
                                           chat_template_kwargs={"thinking": True}))
     kinds = []
     for e in ev:
@@ -268,7 +276,7 @@ def thinking_streams_reasoning_then_content():
 def reasoning_effort_tiers():
     lengths = {}
     for tier in ("low", "high", "max"):
-        out = chat(messages=user("How many primes are below 60?"), max_tokens=8192, temperature=0,
+        out = chat(messages=user("How many primes are below 60?"), max_tokens=budget(8192), temperature=0,
                    reasoning_effort=tier, chat_template_kwargs={"thinking": True})
         m = out["choices"][0]["message"]
         check(reasoning_of(m), f"no reasoning at effort {tier}")
@@ -319,7 +327,9 @@ def tool_multi_turn():
         {"role": "assistant", "content": first.get("content"), "tool_calls": first["tool_calls"]},
         {"role": "tool", "tool_call_id": tc["id"], "content": json.dumps({"temp_c": -7, "sky": "snow"})}]
     final = chat(messages=msgs, tools=[WEATHER], max_tokens=256, **no_think())["choices"][0]["message"]
-    check("-7" in (final["content"] or "") or "7" in (final["content"] or ""), f"final {final['content']!r}")
+    # The reply must use the tool result (-7 C, snow), not just mention a 7.
+    text = final["content"] or ""
+    check(re.search(r"(-|\u2212|minus\s*)7\b", text, re.I) or "snow" in text.lower(), f"final {text!r}")
 
 
 @case
@@ -396,7 +406,7 @@ def errors_are_clean():
 @case
 def api_key_enforced():
     if not ARGS.api_key:
-        print("      no --api-key given: server runs unauthenticated")
+        print("      no API key given: server runs unauthenticated")
         return
     status, _ = call("GET", "/models", key=None)
     check(status == 401, f"request without key gave {status}")
@@ -408,11 +418,15 @@ def main() -> int:
     global ARGS
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--base-url", required=True)
-    p.add_argument("--api-key", default="")
+    p.add_argument("--api-key", default=os.environ.get("API_KEY", ""), help="default: env API_KEY")
     p.add_argument("--model", default="deepseek-v4.1-flash")
     p.add_argument("--only", default="")
     p.add_argument("--long-tokens", type=int, default=16000)
     ARGS = p.parse_args()
+    global MAX_MODEL_LEN
+    status, models = call("GET", "/models")
+    if status == 200:
+        MAX_MODEL_LEN = next((m.get("max_model_len") for m in models["data"] if m["id"] == ARGS.model), None) or MAX_MODEL_LEN
     wanted = {s for s in ARGS.only.split(",") if s}
     failed = 0
     for fn in CASES:
