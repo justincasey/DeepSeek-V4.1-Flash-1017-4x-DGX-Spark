@@ -79,6 +79,7 @@ unset _CALLER _k _v _line
 : "${PREFIX_CACHING:=1}"
 : "${MXFP8_BACKEND:=cutlass}"          # FlashInfer backend for the FP8 dense layers: cutlass | b12x | auto
 : "${NCCL_TRIM:=1}"                     # smaller NCCL buffers: more free unified memory per node
+: "${TOPK_SORT:=1}"                     # fixed sparse-indexer top-k order: reproducible outputs under CUDA graphs
 : "${EXTRA_VLLM_ARGS:=}"
 : "${EXTRA_DOCKER_ARGS:=}"
 : "${WAIT_TIMEOUT:=2400}"
@@ -246,6 +247,7 @@ docker_args() {  # docker_args RANK: docker run argv (switchless NCCL contract +
     -e VLLM_ENGRAM_DISK_BACKED=1 -e VLLM_ENGRAM_MODEL_DIR="$MODEL_DIR" \
     -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False \
     -e DSV41_MXFP8_BACKEND="$MXFP8_BACKEND" \
+    -e DSV41_TOPK_SORT="$(is_true "$TOPK_SORT" && echo 1 || echo 0)" \
     -e HF_HUB_OFFLINE=1
   # The key is named, never valued, here: docker copies it from the remote shell's environment (cmd_start sends
   # it over ssh stdin), so it stays out of every process argv and print-serve. vLLM reads VLLM_API_KEY.
