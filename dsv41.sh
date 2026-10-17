@@ -76,6 +76,7 @@ unset _CALLER _k _v _line
 : "${TEXT_ONLY:=0}"
 : "${PREFIX_CACHING:=1}"
 : "${MXFP8_BACKEND:=cutlass}"          # FlashInfer backend for the FP8 dense layers: cutlass | b12x | auto
+: "${NCCL_TRIM:=1}"                     # smaller NCCL buffers: more free unified memory per node
 : "${EXTRA_VLLM_ARGS:=}"
 : "${EXTRA_DOCKER_ARGS:=}"
 : "${WAIT_TIMEOUT:=2400}"
@@ -228,6 +229,12 @@ docker_args() {  # docker_args RANK: docker run argv (switchless NCCL contract +
   # The key is named, never valued, here: docker copies it from the remote shell's environment (cmd_start sends
   # it over ssh stdin), so it stays out of every process argv and print-serve. vLLM reads VLLM_API_KEY.
   if (( r == 0 )) && [[ -n $API_KEY ]]; then printf '%s\n' -e VLLM_API_KEY; fi
+  # NCCL connection buffers live in pinned host RAM, which on GB10 is GPU memory. Smaller buffers, no LL128 and
+  # 8 channels gave 3-4 GiB more MemAvailable per node at 1M context with no measured decode or prefill cost
+  # (README Benchmarks). Settings from MiaAI-Lab's DeepSeek-v4.1-Flash-DGX-Sparks measurements.
+  if is_true "$NCCL_TRIM"; then
+    printf '%s\n' -e NCCL_BUFFSIZE=1048576 -e NCCL_LL128_BUFFSIZE=262144 -e 'NCCL_PROTO=^LL128' -e NCCL_MAX_NCHANNELS=8
+  fi
   if [[ -n $EXTRA_DOCKER_ARGS ]]; then local -a extra; read -r -a extra <<<"$EXTRA_DOCKER_ARGS"; printf '%s\n' "${extra[@]}"; fi
   echo "$IMAGE"
 }
