@@ -21,17 +21,18 @@ cp .env.example .env        # set NODES (management addresses, ring cable order,
 ## Headline numbers
 
 Measured 2026-10-17 on 4× DGX Spark (GB10) over the switchless ring with this repo's defaults: 1M context,
-DSpark k=3, NCCL trims, cutlass MXFP8. vLLM `0.1.dev20904+g179dd0fa9` (image built from
-`vllm/vllm-openai:deepseekv41-flash-0909`), checkpoint revision `1bae0e1`. Decode: greedy, thinking off,
-`max_tokens` 512, 30 s windows, tokens counted from `usage` (not SSE chunks). Method under
-[Benchmarks](#benchmarks).
+DSpark k=3, `FULL_DECODE_ONLY` CUDA graphs, Marlin MXFP4 MoE, fixed indexer top-k order, NCCL trims, cutlass
+MXFP8. vLLM `0.1.dev20904+g179dd0fa9` (image built from `vllm/vllm-openai:deepseekv41-flash-0909`), checkpoint
+revision `1bae0e1`. Decode: greedy, thinking off, `max_tokens` 512, 30 s windows, tokens counted from `usage`
+(not SSE chunks). Method under [Benchmarks](#benchmarks).
 
 | Measurement | Result |
 |---|---|
-| Decode, one request (prose / code) | **32.2 / 46.4 tok/s** |
-| Decode, 4 requests aggregate (prose / code) | **63.8 / 101.6 tok/s** |
-| Needle at 1,039,971 prompt tokens | PASS, 1,097 s |
-| Prefill, unique text, 4K … 512K tokens | 1,953 … 2,142 … 1,262 tok/s ([table](#prefill)) |
+| Decode, one request (prose / code) | **36.3 / 53.5 tok/s** |
+| Decode, 4 requests aggregate (prose / code) | **85.1 / 126.3 tok/s** |
+| Quality gate, 50 exact-answer questions, greedy | 49/50 with CUDA graphs and 49/50 eager, identical answers 50/50 |
+| Needle at 1,039,971 prompt tokens | PASS, 1,097 s (measured with DeepGEMM MoE, before the Marlin default) |
+| Prefill, unique text, 4K … 512K tokens | 1,953 … 2,142 … 1,262 tok/s ([table](#prefill); DeepGEMM MoE) |
 | KV pool per rank at 13 GiB | 2,666,467 tokens (2.54× a full 1M request) |
 | Weights per rank, incl. the DSpark drafter | 74.52 GiB |
 | Boot to API (`start`) | ~340 s (weights ~185 s) |
@@ -111,7 +112,8 @@ control machine; `.env.example` carries the GLM-5.3 gr8 TP4 stack as the example
 ./dsv41.sh restore-other   # roll back: stop this stack, then RESTORE_OTHER
 ```
 
-<!-- PENDING: rollback -->
+Rollback (`restore-other`) is wired to the GLM gr8 stack in `.env.example` but was not exercised during this
+bring-up: the GLM stack stays down while DeepSeek-1017 serves.
 
 Use it like any OpenAI endpoint:
 
@@ -219,6 +221,8 @@ comment only at the start of a value or after whitespace.
 | `COMPILATION_CONFIG` | (empty) | empty: `FULL_DECODE_ONLY` CUDA graphs captured at `MAX_NUM_SEQS` × (k+1) batch sizes (k+1 = 1 without DSpark; defaults give 4, 8, 12, 16); set: this vLLM `--compilation-config` JSON verbatim |
 | `MXFP8_BACKEND` | `cutlass` | FlashInfer backend for the FP8 dense GEMMs: `cutlass`, `b12x` (where K%128 = 0, else cutlass) or `auto` |
 | `NCCL_TRIM` | `1` | smaller NCCL buffers (1 MiB, no LL128, 8 channels): more free unified memory per node |
+| `MOE_BACKEND` | `marlin` | MXFP4 expert kernel: `marlin` (fastest measured), `deep_gemm` (vLLM's auto pick on sm_121), `humming`, `auto`; the DSpark drafter inherits it |
+| `TOPK_SORT` | `1` | ascending sparse-indexer top-k order (`DSV41_TOPK_SORT`): removes the run-to-run divergence CUDA-graph decode had |
 | `TEXT_ONLY` | `0` | `1`: `--language-model-only` (drops image input) |
 | `PREFIX_CACHING` | `1` | prefix caching |
 | `WAIT_TIMEOUT` | `2400` | seconds `start` waits for the API |
@@ -274,20 +278,32 @@ aggregate tok/s = sum of `usage.completion_tokens` / cell wall time.
 
 ### Production profile (2026-10-17, this repo's defaults)
 
-1M context, 13 GiB KV per rank, DSpark k=3 probabilistic, `FULL_DECODE_ONLY` graphs, NCCL trims, cutlass MXFP8.
-The full record of this profile lives in `bench/records/2026-10-17-production/`.
+1M context, 13 GiB KV per rank, DSpark k=3 probabilistic, `FULL_DECODE_ONLY` graphs, NCCL trims, cutlass MXFP8,
+Marlin MXFP4 MoE, fixed indexer top-k order.
 
-<!-- PENDING: records -->
+Pending: the full `bench all` record of these defaults (to be stored in `bench/records/2026-10-17-production/`)
+has not been run yet. The rows below come from the individual runs named in each line.
 
 | Measurement | Result |
 |---|---|
-| Decode c=1, prose / code | 32.2 / 46.4 tok/s |
-| Decode c=4 aggregate, prose / code | 63.8 / 101.6 tok/s |
-| Needle, 1,039,971 prompt tokens | PASS, 1,097 s |
+| Decode c=1, prose / code (current defaults) | 36.3 / 53.5 tok/s |
+| Decode c=4 aggregate, prose / code (current defaults) | 85.1 / 126.3 tok/s |
+| Needle, 1,039,971 prompt tokens (DeepGEMM MoE) | PASS, 1,097 s |
 | KV pool per rank | 2,666,467 tokens |
 | Boot | ~340 s, of which weights ~185 s |
 | `api-test` (8K, eager) | 26/26 |
 | `parity` | 15/15 |
+
+### MoE backend (1M profile, graphs + DSpark k=3)
+
+vLLM's automatic pick on sm_121 is DeepGEMM MXFP4 (FP8 activations). Marlin (MXFP4 weights, BF16 activations)
+is faster at every cell and is the default (`MOE_BACKEND`):
+
+| MoE backend | prose c=1 | code c=1 | prose c=4 | code c=4 |
+|---|---:|---:|---:|---:|
+| DeepGEMM MXFP4 (vLLM auto) | 32.2 | 46.4 | 63.8 | 101.6 |
+| Marlin | 37.1 | 55.1 | 89.0 | 117.6 |
+| Marlin + fixed top-k order (default) | 36.3 | 53.5 | 85.1 | 126.3 |
 
 ### Decode by prompt type (8K context, graphs + DSpark k=3, before NCCL trims)
 
@@ -360,7 +376,13 @@ draft step, which shows Engram stays correct under CUDA-graph replay.
 
 ## Known limits
 
-- <!-- PENDING: determinism --> Greedy and seeded reproducibility is still being measured.
+- Determinism. The indexer's top-k kernel emits indices in an atomics-dependent order; CUDA-graph decode always
+  runs it, so before `TOPK_SORT` identical greedy requests diverged and per-token logprobs on an identical prefix
+  moved by up to 0.44 nats. With the fixed order (default) seeded sampling reproduced 3/3 and most prompts are
+  bitwise identical, but some prompts still flip near-tie tokens run to run in both graph and eager mode
+  (FP8/MXFP4 numerics and MoE routing are not batch-invariant). Graph and eager mode give the same quality:
+  49/50 each on a 50-question exact-answer set, identical answers 50/50. `VLLM_BATCH_INVARIANT` would conflict
+  with the switchless ring NCCL contract.
 - After a ~1M-token prefill MemAvailable drops to 3–6 GiB per node (allocator retention). Do not run two
   million-token prompts at once.
 - DSpark accepts ~1.0 extra token per draft step on prose vs ~2.0 on code, so prose decodes slower.
