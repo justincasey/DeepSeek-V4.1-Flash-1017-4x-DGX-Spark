@@ -376,8 +376,15 @@ def image_input():
 
 @case
 def long_context_needle():
-    filler = "The sky was grey and the river ran slowly past the old mill. "  # ~13 tokens
-    reps = max(1, ARGS.long_tokens // 13)
+    filler = "The sky was grey and the river ran slowly past the old mill. "
+    root = ARGS.base_url.rstrip("/").removesuffix("/v1")
+    req = urllib.request.Request(root + "/tokenize", method="POST", headers={"Content-Type": "application/json"},
+                                 data=json.dumps({"model": ARGS.model, "prompt": filler, "add_special_tokens": False}).encode())
+    if ARGS.api_key:
+        req.add_header("Authorization", f"Bearer {ARGS.api_key}")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        per = len(json.loads(r.read())["tokens"])  # exact tokens per filler sentence on this server
+    reps = max(1, min(ARGS.long_tokens, MAX_MODEL_LEN - 512) // per)
     half = reps // 2
     text = filler * half + "The secret code is 48213. " + filler * (reps - half)
     out = chat(messages=user(text + "\n\nWhat is the secret code? Reply with the number only."), max_tokens=16,

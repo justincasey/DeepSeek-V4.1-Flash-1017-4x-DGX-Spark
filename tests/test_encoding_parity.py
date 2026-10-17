@@ -69,6 +69,18 @@ def detok(tokens: list[int]) -> str:
     return post("/detokenize", {"model": ARGS.model, "tokens": tokens})["prompt"]
 
 
+def with_tool_call_ids(messages):
+    """Publisher fixtures omit tool-call ids, which the OpenAI schema requires. DSML never renders ids, so
+    numbering them call_0, call_1, ... (the fixtures' tool_call_id convention) leaves the prompt unchanged."""
+    msgs, n = copy.deepcopy(messages), 0
+    for m in msgs:
+        for tc in m.get("tool_calls") or []:
+            if not tc.get("id"):
+                tc["id"] = f"call_{n}"
+            n += 1
+    return msgs
+
+
 def with_tools_on_system(messages, tools):
     """vLLM's V4.1 wrapper attaches request tools to the first system message, inserting an empty one."""
     msgs = copy.deepcopy(messages)
@@ -139,7 +151,7 @@ def main() -> int:
             kw = {"thinking": case.get("thinking_mode") == "thinking"}
             if case.get("reasoning_effort") is not None:
                 kw["reasoning_effort"] = case["reasoning_effort"]
-            ok &= compare(f"golden_{i}", ref, case["messages"], case.get("tools"), kw)
+            ok &= compare(f"golden_{i}", ref, with_tool_call_ids(case["messages"]), case.get("tools"), kw)
 
         base = [{"role": "system", "content": "You are a careful assistant."},
                 {"role": "user", "content": "How many primes are below 60?"}]
