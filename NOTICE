@@ -1,0 +1,21 @@
+DeepSeek-V4.1-Flash-1017 on four DGX Sparks (vLLM)
+
+The scripts, tests and documentation in this repository are licensed under the Apache License 2.0 (see LICENSE).
+
+The following third-party components are fetched at build time or mounted at run time. They are NOT
+redistributed in this repository and remain under their own licenses:
+
+- vLLM (Apache-2.0, the vLLM project), via DeepSeek's image vllm/vllm-openai:deepseekv41-flash-0909, pulled by
+  digest as the build base.
+- GB10 runtime fixes from vcruz305/DeepSeek-V4.1-Flash-EXL3-DGX-Spark-recipe at commit
+  e120f52e599b4244df87f6c3e49ef12f3ecb67ab (AGPL-3.0-only), cloned at image build and applied unmodified:
+  disk-backed Engram overlay by @Blackwellboy (PR #2, hardened by vcruz305 / Victor Cruz); SM120 sparse-MLA
+  fixes 01-08, DSpark fixswa and the Engram fixes by @fattchris.
+- DeepSeek's DeepSeek-V4.1-Flash-1017 reference encoder encoding/encoding.py (MIT, DeepSeek), downloaded from
+  the pinned checkpoint revision at image build. The model weights (MIT, DeepSeek) are downloaded by
+  `./dsv41.sh fetch`.
+- Switchless NCCL bundle (nccl-switchless-v0.0.1), mounted from each node and LD_PRELOADed at run time: NVIDIA
+  NCCL 2.30.7 (Apache-2.0 / BSD-3-Clause); switchless-cycle patches by SparkRing (FujitsuPolycom/sparkring,
+  Apache-2.0); hardening and packaging by Alex Ellis, OpenFaaS Ltd (Apache-2.0).
+
+Full credits, including prior art used as inspiration only: README.md, section "Credits".
