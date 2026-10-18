@@ -30,8 +30,9 @@ TTFT (median over the cell's own worker requests; seconds to the first content d
 
 _decode: ok (2026-10-18T14:26:23-0500)_
 
-c=8 is boot-bimodal: other boots of the same build gave code 456 and json 506 tok/s; each boot is stable within
-itself.
+The c=8 cells move between boots (other boots gave code 456 and json 506 tok/s), but the engine does not: in four
+restarts vLLM's counters showed 405-412 tok/s and 3.15-3.22 tokens per draft in every 30 s c=8 window. The spread is
+in the client's window accounting (README, Known limits).
 
 ## Prefill
 

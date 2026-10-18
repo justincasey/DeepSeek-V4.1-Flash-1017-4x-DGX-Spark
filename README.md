@@ -434,9 +434,9 @@ hits). The current defaults are `autoresearch.sh` run #26 after a discarded warm
 | Model loading per rank | 31.3 s | 18.4 s | |
 | Same 133,855-token prompt after a restart, TTFT | 20.7 s (cold) | 0.81 s | |
 
-Mean gain: decode c=1 **+6.09%** (best run +6.18%), prefill **+9.78%** (+9.4 to +9.8 across boots). c=8 is
-boot-bimodal: the same build gave code 321 or 456 and json 370 or 506 tok/s depending on the boot, stable within a
-boot (three repeats within ±0.1%; [Known limits](#known-limits)). Before the site's clock lock, with the clocks
+Mean gain: decode c=1 **+6.09%** (best run +6.18%), prefill **+9.78%** (+9.4 to +9.8 across boots). The c=8 cells
+move between boots (code 321 or 456, json 370 or 506 tok/s) while the engine does not: in four boots the engine
+produced 405-412 tok/s in each 30 s c=8 window with the same acceptance; see [Known limits](#known-limits). Before the site's clock lock, with the clocks
 unlocked at 2,470-2,502 MHz, prefill on this branch read +11.6 to +12.2%; every number here is at the lock. What
 changed, in the order it landed (the branch's commit messages carry each measurement):
 
@@ -647,10 +647,13 @@ Their numbers, from their harnesses and sites, not measured here and not directl
   hold it with 4 GiB to spare fails the save (logged; the next start is cold). Each save adds the write time of
   10.5 GiB per node to `stop` and each restore its read time to `start`: measured 1.2-5 s per save and 1.9 s per
   restore (slowest rank 6 GB/s). `KV_PERSIST=0` turns it off; delete the directory to reclaim the space.
-- **c=8 decode depends on the boot.** Across boots, c=8 aggregate decode came out at one of two levels per cell (code
-  321 or 456 tok/s, json 370 or 506), stable within a boot (three repeats within ±0.1%); against r6v that is +8.5%
-  to +24% on the mean. The cause is unexplained; it is not the persistent prefix cache (`docker/0008-*.patch`).
-  Prefill varied far less across boots (+9.4% to +9.8% against r6v).
+- **The c=8 decode benchmark number depends on the boot; the engine does not.** Across boots, `bench decode` at c=8
+  reported one of two levels per cell (code 321 or 456 tok/s, json 370 or 506), stable within a boot (three repeats
+  within ±0.1%). In four restarts the vLLM counters showed the same work in every 30 s window: 3,816-3,875 drafts,
+  3.15-3.22 tokens per draft, 405-412 engine tok/s, while the client reported 321-384. The spread is in how the
+  client's window (completed requests over elapsed time, eight identical greedy requests) lines up with request
+  batches; the exact mechanism is not pinned down. Read c=8 from the engine counters, not this cell. Prefill varied
+  far less across boots (+9.4% to +9.8% against r6v).
 - **The memory guard kills, by design.** A guard SIGKILLs its rank when MemAvailable drops below its threshold
   (5 GiB while loading, 3 GiB serving) or when the container can no longer be inspected. TP4 cannot continue on three
   ranks, so a kill stops the service: read `./dsv41.sh logs` and the guard journal (`journalctl -t spark-memguard`),
