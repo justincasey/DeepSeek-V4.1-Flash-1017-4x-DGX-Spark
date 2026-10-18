@@ -27,7 +27,13 @@ and each remains under its own license.
   by Christopher Owen (Apache-2.0; commit 2ce3644fa361290b0024f0ee784b17b63c8b2882,
   experiments/2026-10-18-dspark-profile-replays/overlay: vllm/v1/worker/gpu/spec_decode/adaptive_verification.py,
   copied unmodified and pinned by sha256; adaptive verification's cost curves timed from 25 replays of each
-  graph-captured shape instead of 5); and the vLLM
+  graph-captured shape instead of 5), then docker/0007-dspark-adaptive-verification-linear-row-cost-budget.patch:
+  spark-ds41f's vLLM patch 0184 by Christopher Owen (Apache-2.0; commit 03e8775c9f2c9a791bb49a2f4d97575020ec0f7b,
+  experiments/2026-10-18-r6x/vllm; the change of his experiments/2026-10-18-dspark-linear-budget/overlay at
+  commit 53ef3558f4ca56f244cfb1566061199ad9a8975f), his authorship kept, rebased by us onto the tree above (the
+  deleted 25-replay profile resolved to his file; 0006's None guard kept in the model runner): the DSpark draft
+  budget by a fixed linear step cost, the speculative config's adaptive_verification_row_cost in place of the
+  boot-timed cost curves; and the vLLM
   nightly image docker.io/vllm/vllm-openai@sha256:3cf14c52765a0f0c2f09035e05fa79e1e4b2f9788b64afa90fa41c1ff12d29cf
   (vllm-project/vllm af1c01499b289be555c475669ba50a88e96d846e, CUDA 13.0.2, FlashInfer 0.6.18.post1) as the
   runtime base.
@@ -56,8 +62,9 @@ Patch authors, from the patch headers of the series above: Christopher Owen (all
 TileKernels patches, three of four NCCL patches, and 172 of 173 vLLM patches); carlosmolina0615 (vLLM 0045,
 the CED decoder's MoE routed with its own padding mask in TileLang); Stanislav Bardyuk (NCCL 0001,
 NVIDIA/nccl#2393). The vLLM series credits huxiaofengtiger (NVIDIA Developer Forums) for reported issues,
-and ports vllm-project/vllm#51694. The scale-codes and profile-replays overlays are by Christopher Owen. Our
-patches (docker/0001-*.patch to docker/0006-*.patch) are by Justin Casey; 0003 and 0004 port
+and ports vllm-project/vllm#51694. The scale-codes and profile-replays overlays and docker/0007-*.patch (his
+vLLM 0184, rebased) are by Christopher Owen. Our patches (docker/0001-*.patch to docker/0006-*.patch) are by
+Justin Casey; 0003 and 0004 port
 vllm-project/vllm#60945 by Chauncey (chaunceyjiang) and vllm-project/vllm#61161 by DimensionSTP (Apache-2.0, the
 vLLM project); 0005 and 0006 change Local Inference Lab's and Christopher Owen's DeepSeek V4.1 code paths, 0005
 after the bounded decoder replay idea of vllm-project/vllm#58132 (ivanium) and #59894 (gcanlin), porting no

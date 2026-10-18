@@ -79,8 +79,7 @@ unset _CALLER _k _v _line
 : "${DSPARK:=1}"
 : "${NUM_SPECULATIVE_TOKENS:=6}"
 : "${DRAFT_SAMPLE_METHOD:=greedy}"
-: "${ADAPTIVE_VERIFICATION_COST_SCALE=1.0}"   # empty = no adaptive verification
-: "${DSPARK_COST_DIR:=}"                 # empty = one per build under /cache | off | absolute path under /cache
+: "${ADAPTIVE_VERIFICATION_ROW_COST=0.01}"   # DSpark draft budget row cost (0 < x < 1); empty = no adaptive verification
 : "${EAGER:=0}"
 : "${COMPILATION_CONFIG:=}"
 [[ -v GENERATION_DEFAULTS ]] || GENERATION_DEFAULTS='{"temperature":1.0,"top_p":1.0}'   # empty = vLLM's own
@@ -121,7 +120,6 @@ GUARD_REV=2dc95329610188451a5c5f5af98e5c392144809c
 GUARD_SUMS="c70a379efec2e48858e86c77ab8eb90cc748700f702afe663480d92fa5c1ab09  memguard.sh
 a1c0cb8e3d78eb3b22c457bb7fba8087f79e9ac31342dc38106f7cde65bd5f15  memguard-start.sh"
 GUARD_UNIT=$CONTAINER-memguard.service
-DSPARK_COST_ROOT=/cache/kkref/dspark-costs
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 die() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
@@ -309,8 +307,9 @@ serve_common() {  # the rank-independent `vllm serve` argv (the image entrypoint
     case $DRAFT_SAMPLE_METHOD in greedy|probabilistic) ;; *) die "DRAFT_SAMPLE_METHOD must be greedy or probabilistic" ;; esac
     spec=$(printf '{"method":"dspark","num_speculative_tokens":%s,"draft_tensor_parallel_size":4,"attention_backend":"%s","draft_sample_method":"%s","rejection_sample_method":"block"' \
       "$NUM_SPECULATIVE_TOKENS" "$attn" "$DRAFT_SAMPLE_METHOD")
-    if [[ -n $ADAPTIVE_VERIFICATION_COST_SCALE ]]; then
-      spec+=$(printf ',"enable_adaptive_verification":true,"adaptive_verification_cost_scale":%s' "$ADAPTIVE_VERIFICATION_COST_SCALE")
+    if [[ -n $ADAPTIVE_VERIFICATION_ROW_COST ]]; then
+      [[ $ADAPTIVE_VERIFICATION_ROW_COST =~ ^0?\.[0-9]*[1-9][0-9]*$ ]] || die "ADAPTIVE_VERIFICATION_ROW_COST must be a number between 0 and 1 (got '$ADAPTIVE_VERIFICATION_ROW_COST')"
+      spec+=$(printf ',"enable_adaptive_verification":true,"adaptive_verification_row_cost":%s' "$ADAPTIVE_VERIFICATION_ROW_COST")
     fi
     printf '%s\n' --speculative-config "$spec}"
   fi
@@ -394,26 +393,6 @@ profile_env() {
   [[ $KERNEL_BACKEND == tilelang ]] && env+=(VLLM_L2_PREFETCH_KERNELS=tilelang VLLM_DS41_PACKED_BF16_LM_HEAD=1)
   for e in "${env[@]}"; do printf '%s\n' -e "$e"; done
 }
-# DSpark's verifier prices its steps from cost curves rank 0 times on a boot and pins in SPARK3_DSPARK_COST_DIR.
-# As in spark-ds41f (bin/spark build_fingerprint), the default directory is per build: a digest of the image
-# recipe (docker/), the tag, the engine environment and the serve arguments, so a changed build or flag profiles
-# once on its first boot and never schedules on another build's curves.
-build_fingerprint() {
-  local docker_digest
-  docker_digest=$(cd "$ROOT" && find docker -type f ! -name '*.pyc' ! -path '*/__pycache__/*' | LC_ALL=C sort \
-    | while IFS= read -r f; do printf '%s %s\n' "$f" "$(sha256 <"$f")"; done | sha256)
-  { echo "$docker_digest"; echo "$IMAGE"; profile_env; serve_common; } | sha256 | cut -c1-16
-}
-cost_env() {
-  local dir
-  case $DSPARK_COST_DIR in
-    off) return 0 ;;
-    "") dir=$DSPARK_COST_ROOT/build-$(build_fingerprint) || exit 1 ;;
-    /cache/?*) dir=$DSPARK_COST_DIR ;;
-    *) die "DSPARK_COST_DIR must be empty, off, or an absolute path under /cache (got '$DSPARK_COST_DIR')" ;;
-  esac
-  printf '%s\n' -e "SPARK3_DSPARK_COST_DIR=$dir"
-}
 
 docker_args() {  # docker_args RANK: docker run argv up to and including the image (spark-ds41f container.docker_run_args)
   local r=$1
@@ -427,7 +406,6 @@ docker_args() {  # docker_args RANK: docker run argv up to and including the ima
   [[ -n $DRI_CARD ]] && printf '%s\n' "--mount=type=bind,source=$DRI_CARD,target=/dev/dri/card0" '--device-cgroup-rule=c 226:* rw'
   [[ -n $CPUSET ]] && printf '%s\n' "--cpuset-cpus=$CPUSET"
   profile_env
-  cost_env
   ring_env "$r"
   # The key is named, never valued, here: docker copies it from the remote shell's environment (cmd_start sends
   # it over ssh stdin), so it stays out of every process argv and print-serve. vLLM reads VLLM_API_KEY.

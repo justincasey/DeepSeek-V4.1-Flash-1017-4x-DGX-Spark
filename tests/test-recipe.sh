@@ -28,7 +28,7 @@ export NODES="10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4" MODELS_DIR=/m MODEL_NAME=M IM
   CACHE_DIR=/cache-host SERVED_NAME=s HOST=0.0.0.0 PORT=8000 MASTER_PORT=9999 API_KEY= \
   MAX_MODEL_LEN=1048576 MAX_NUM_SEQS=16 MAX_NUM_BATCHED_TOKENS=8192 GPU_MEMORY_UTILIZATION=0.82 \
   KV_CACHE_MEMORY_BYTES=11274289152 PREFIX_CACHING=1 PREFIX_CACHE_RETENTION_INTERVAL=8192 KERNEL_BACKEND=tilelang \
-  DSPARK=1 NUM_SPECULATIVE_TOKENS=5 DRAFT_SAMPLE_METHOD=greedy ADAPTIVE_VERIFICATION_COST_SCALE=2.0 DSPARK_COST_DIR= \
+  DSPARK=1 NUM_SPECULATIVE_TOKENS=5 DRAFT_SAMPLE_METHOD=greedy ADAPTIVE_VERIFICATION_ROW_COST=0.02 \
   EAGER=0 COMPILATION_CONFIG= GENERATION_DEFAULTS='{"temperature":1.0,"top_p":1.0}' TEXT_ONLY=0 MAX_IMAGES=4 \
   DISPLAY_CARVEOUT=0 DRI_CARD=/dev/dri/by-path/pci-000f:01:00.0-card CPUSET=5-9,15-19 CONTAINER_MEMORY=112g \
   STARTUP_MEMGUARD_GIB=5 STARTUP_MEMGUARD_INTERVAL=0.25 STARTUP_MEMGUARD_WAIT=120 MEMGUARD_GIB=3 MEMGUARD_INTERVAL=2 \
@@ -119,10 +119,10 @@ has "$c" --override-generation-config && bad "GENERATION_DEFAULTS= still overrid
 
 c=$(run 0)
 spec=$(grep -o -- "--speculative-config [^ ]*" <<<"$c" | cut -d' ' -f2- | sed 's/\\//g')
-python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d=={"method":"dspark","num_speculative_tokens":5,"draft_tensor_parallel_size":4,"attention_backend":"TILELANG","draft_sample_method":"greedy","rejection_sample_method":"block","enable_adaptive_verification":True,"adaptive_verification_cost_scale":2.0}, d' "$spec" \
-  && ok "DSpark speculative config is r6v's (k=5, adaptive verification)" || bad "DSpark speculative config: $spec"
-c=$(ADAPTIVE_VERIFICATION_COST_SCALE= run 0)
-has "$c" adaptive_verification && bad "ADAPTIVE_VERIFICATION_COST_SCALE= still adaptive" || ok "ADAPTIVE_VERIFICATION_COST_SCALE= turns adaptive verification off"
+python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d=={"method":"dspark","num_speculative_tokens":5,"draft_tensor_parallel_size":4,"attention_backend":"TILELANG","draft_sample_method":"greedy","rejection_sample_method":"block","enable_adaptive_verification":True,"adaptive_verification_row_cost":0.02}, d' "$spec" \
+  && ok "DSpark speculative config (k=5, adaptive verification at row cost 0.02)" || bad "DSpark speculative config: $spec"
+c=$(ADAPTIVE_VERIFICATION_ROW_COST= run 0)
+has "$c" adaptive_verification && bad "ADAPTIVE_VERIFICATION_ROW_COST= still adaptive" || ok "ADAPTIVE_VERIFICATION_ROW_COST= turns adaptive verification off"
 c=$(DSPARK=0 run 0) || bad "DSPARK=0 print-serve failed"
 has "$c" --speculative-config && bad "DSPARK=0 still passes --speculative-config" || ok "DSPARK=0 drops speculation"
 
@@ -159,14 +159,6 @@ c=$(CPUSET= CONTAINER_MEMORY= DRI_CARD= run 0)
 c=$(DISPLAY_CARVEOUT=1 run 0)
 has "$c" SPARK3_DISPLAY_CARVEOUT_WEIGHTS=1 && ok "DISPLAY_CARVEOUT=1" || bad "DISPLAY_CARVEOUT=1"
 
-# DSpark cost curves: one directory per build, the same on every rank, stable, and new when a timing input changes
-d0=$(envval "$(run 0)" SPARK3_DSPARK_COST_DIR); d3=$(envval "$(run 3)" SPARK3_DSPARK_COST_DIR)
-dn=$(envval "$(MAX_NUM_SEQS=8 run 0)" SPARK3_DSPARK_COST_DIR); di=$(envval "$(IMAGE=img:u run 0)" SPARK3_DSPARK_COST_DIR)
-[[ $d0 =~ ^/cache/kkref/dspark-costs/build-[0-9a-f]{16}$ && $d0 == "$d3" && $d0 == "$(envval "$(run 0)" SPARK3_DSPARK_COST_DIR)" \
-   && $dn != "$d0" && $di != "$d0" ]] && ok "per-build DSpark cost directory ($d0)" || bad "cost dir: $d0 / $d3 / $dn / $di"
-c=$(DSPARK_COST_DIR=off run 0); has "$c" SPARK3_DSPARK_COST_DIR && bad "DSPARK_COST_DIR=off still pins" || ok "DSPARK_COST_DIR=off"
-[[ $(envval "$(DSPARK_COST_DIR=/cache/x run 0)" SPARK3_DSPARK_COST_DIR) == /cache/x ]] && ok "DSPARK_COST_DIR path" || bad "DSPARK_COST_DIR path"
-
 # The key reaches vLLM as VLLM_API_KEY copied from the remote shell env: named on rank 0 only, never valued in argv.
 keyok=1
 for r in 0 1 2 3; do
@@ -182,7 +174,7 @@ g=$(STARTUP_MEMGUARD_GIB=6 STARTUP_MEMGUARD_INTERVAL=0.5 STARTUP_MEMGUARD_WAIT=9
 [[ $g == *" c startup 6 0.5 90 prelaunch" ]] && ok "memory guard keys reach memguard-start.sh" || bad "memory guard keys: $g"
 
 # invalid config must fail without printing a partial command
-for bogus in KERNEL_BACKEND=bogus DRAFT_SAMPLE_METHOD=bogus DSPARK_COST_DIR=relative NUM_SPECULATIVE_TOKENS=0 \
+for bogus in KERNEL_BACKEND=bogus DRAFT_SAMPLE_METHOD=bogus ADAPTIVE_VERIFICATION_ROW_COST=1.5 NUM_SPECULATIVE_TOKENS=0 \
              MAX_NUM_BATCHED_TOKENS=96 RING_GID_0=x RING_MGMT_2= MEMGUARD_GIB=5 STARTUP_MEMGUARD_INTERVAL=0 \
              "DISPLAY_CARVEOUT=1 DRI_CARD=" CONTAINER=bad/name; do
   if c=$(env $bogus ./dsv41.sh print-serve 0 2>/dev/null); then bad "$bogus print-serve succeeded"

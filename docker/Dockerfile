@@ -4,7 +4,8 @@
 # DeepSeek-V4.1-Flash-1017 on four DGX Sparks: Christopher Owen's spark-ds41f engine, release r6w
 # (experiments/2026-10-18-r6w-swiglu: r6v plus vLLM 0181, the routed SwiGLU and MXFP8 cast over the live
 # tiles), rebuilt from scratch, plus two patches of ours, his scale-codes overlay, four more of ours on
-# top (two upstream vLLM fixes ported, two exact prefill savings), and his DSpark profile-replays overlay.
+# top (two upstream vLLM fixes ported, two exact prefill savings), his DSpark profile-replays overlay, and
+# his DSpark draft budget by a fixed linear step cost (r6x's vLLM 0184, rebased here as docker/0007-*.patch).
 #
 #   docker build -f docker/Dockerfile -t dsv41-1017-ds41f:r6w .     (context: the repository root; only
 #                                                                    docker/ is read; linux/arm64 only)
@@ -24,8 +25,9 @@
 # reasoning-effort aliases and docker/0002-*.patch per-rank weight snapshots, on top of his vLLM series, then
 # his scale-codes overlay as one commit, then docker/0003-*.patch to docker/0006-*.patch: our ports of two
 # upstream vLLM fixes and two exact prefill savings of ours, then his DSpark profile-replays overlay as one
-# commit), and the final `dsv41` stage (the TileLang SM12x block-scaled MMA check, his memguard scripts and
-# GPU smoke script, checks of our patches and the overlays, our labels).
+# commit, then docker/0007-*.patch: his DSpark linear draft budget rebased onto that tree), and the final
+# `dsv41` stage (the TileLang SM12x block-scaled MMA check, his memguard scripts and GPU smoke script,
+# checks of our patches, the overlays and the linear budget, our labels).
 #
 # Resource use (spark-ds41f's build policy): needs ~64 GiB MemAvailable to start; VLLM_COMPILE_JOBS x
 # VLLM_NVCC_THREADS sized at 8 GiB per job. Build on an idle node.
@@ -98,7 +100,7 @@ ARG CUTLASS_REVISION=cb4247394dd82148787aed73e5dc7cef33cbf862
 ARG CUTLASS_RELEASE_TAG=v4.7.1
 
 # Ours, applied in this order after his vLLM series (Apache-2.0, this repository). docker/ must hold exactly
-# these patches and DSV41_VLLM_POST_OVERLAY_PATCHES below.
+# these patches, DSV41_VLLM_POST_OVERLAY_PATCHES and LINEAR_BUDGET_PATCH below.
 ARG DSV41_VLLM_PATCHES="0001-deepseek-v41-reasoning-effort-minimal-medium.patch 0002-model-loader-weight-snapshots.patch"
 
 # Then Christopher Owen's lossless MoE scale-codes overlay (spark-ds41f experiments/2026-10-18-scale-codes,
@@ -127,12 +129,31 @@ ARG DSV41_VLLM_POST_OVERLAY_PATCHES="0003-spec-decode-block-residual-mass-lookah
 # tail keeps 5), cutting the 16-96-row cost slopes' build-to-build noise 4-5x, and its pin key names the
 # replay counts, so 5-replay curves are never reused. One whole file over r6w's (untouched by 0001-0006), at
 # the commit adding overlay/, pinned by sha256, committed with a fixed author, committer and date;
-# DSV41_VLLM_PATCH_HEAD/TREE are the serving vLLM's head and tree after that commit.
+# PROFILE_REPLAYS_PATCH_HEAD/TREE are the head and tree after that commit.
 ARG PROFILE_REPLAYS_REVISION=2ce3644fa361290b0024f0ee784b17b63c8b2882
 ARG PROFILE_REPLAYS_OVERLAY=experiments/2026-10-18-dspark-profile-replays/overlay
 ARG PROFILE_REPLAYS_ADAPTIVE_VERIFICATION_SHA256=f9f3876ff36cda8d8f4bcc1dcfcd10715bc8bb3b2a5d691565e05614f316e07c
-ARG DSV41_VLLM_PATCH_HEAD=a71931204cc1b49d7596ff12c570fc4ab2f86435
-ARG DSV41_VLLM_TREE=68c0d5fbba65c850490bfc1e125b95a774740de7
+ARG PROFILE_REPLAYS_PATCH_HEAD=a71931204cc1b49d7596ff12c570fc4ab2f86435
+ARG PROFILE_REPLAYS_TREE=68c0d5fbba65c850490bfc1e125b95a774740de7
+
+# Then Christopher Owen's DSpark draft budget by a fixed linear step cost (spark-ds41f
+# experiments/2026-10-18-dspark-linear-budget, its overlay at LINEAR_BUDGET_OVERLAY_REVISION; promoted in r6x as
+# vLLM 0184, experiments/2026-10-18-r6x/vllm at LINEAR_BUDGET_REVISION; Apache-2.0): each step's draft budget
+# maximises expected tokens over 1 + row_cost * rows, row_cost the speculative config's
+# adaptive_verification_row_cost (default 0.02; his screen also ran 0.035), in place of the boot-timed cost
+# curves. It deletes the boot profile (so the profile-replays code above), the pinned curves
+# (SPARK3_DSPARK_COST_DIR) and adaptive_verification_cost_scale. His overlay's whole model_runner.py would
+# drop 0006's None guard, so 0184 is applied as a patch rebased onto the tree above (his authorship and date;
+# the one conflict is the deleted 25-replay profile): adaptive_verification.py and speculative.py come out
+# byte for byte his overlay's (sha256 pins below), model_runner.py is his plus 0006's guard.
+# DSV41_VLLM_PATCH_HEAD/TREE are the serving vLLM's head and tree after it.
+ARG LINEAR_BUDGET_REVISION=03e8775c9f2c9a791bb49a2f4d97575020ec0f7b
+ARG LINEAR_BUDGET_OVERLAY_REVISION=53ef3558f4ca56f244cfb1566061199ad9a8975f
+ARG LINEAR_BUDGET_PATCH=0007-dspark-adaptive-verification-linear-row-cost-budget.patch
+ARG LINEAR_BUDGET_ADAPTIVE_VERIFICATION_SHA256=cffcb7cd663d15f206688a17559e0424c24f145474ce0703635b2ae1d5f525c3
+ARG LINEAR_BUDGET_SPECULATIVE_SHA256=62f0a2409d5c1a64ec1d364033cc2df0268e1aadccf390ac60a5be91ea1b88bd
+ARG DSV41_VLLM_PATCH_HEAD=ef9987d130261b4e35126e9364b6befe77752a82
+ARG DSV41_VLLM_TREE=0e9522300cd782c328ce4c7e053f55c99008a4c7
 
 # Compile parallelism: spark-ds41f sizes jobs from MemAvailable (8 GiB per job, at most 10, two NVCC
 # threads each); on a GB10's 20 cores that is 8.
@@ -318,7 +339,7 @@ RUN set -eux; \
     ds41f-prepare --smoke > /work/out/smoke.py; \
     printf '%s\n' "$SPARK_DS41F_REVISION" > /work/out/REVISION
 
-# ── dsv41-vllm: our patches and the scale-codes and profile-replays overlays on his vLLM series ─────
+# ── dsv41-vllm: our patches, the scale-codes and profile-replays overlays and 0007 on his vLLM series ─
 FROM fetch AS dsv41-vllm
 
 ARG SPARK_DS41F_UPSTREAM
@@ -354,11 +375,14 @@ ARG SCALE_CODES_PATCH_HEAD
 ARG SCALE_CODES_TREE
 ARG PROFILE_REPLAYS_OVERLAY
 ARG PROFILE_REPLAYS_ADAPTIVE_VERIFICATION_SHA256
+ARG PROFILE_REPLAYS_PATCH_HEAD
+ARG PROFILE_REPLAYS_TREE
+ARG LINEAR_BUDGET_PATCH
 ARG DSV41_VLLM_PATCH_HEAD
 ARG DSV41_VLLM_TREE
 COPY docker/*.patch /work/dsv41/
 RUN set -eux; \
-    test "$(cd /work/dsv41 && LC_ALL=C ls | tr '\n' ' ')" = "$DSV41_VLLM_PATCHES $DSV41_VLLM_POST_OVERLAY_PATCHES "; \
+    test "$(cd /work/dsv41 && LC_ALL=C ls | tr '\n' ' ')" = "$DSV41_VLLM_PATCHES $DSV41_VLLM_POST_OVERLAY_PATCHES $LINEAR_BUDGET_PATCH "; \
     cd /work/build/src/vllm; \
     test "$(git rev-parse HEAD)" = "$VLLM_PATCH_HEAD"; \
     for patch in $DSV41_VLLM_PATCHES; do \
@@ -402,6 +426,10 @@ RUN set -eux; \
       git -c commit.gpgsign=false commit --quiet \
         -m "DSpark cost profile: 25 replays of each decode shape (5 of the eager tail)" \
         -m "Christopher Owen's profile-replays overlay, copied unmodified from spark-ds41f $PROFILE_REPLAYS_REVISION ($PROFILE_REPLAYS_OVERLAY): adaptive_verification.py over r6w's (r6v's). Each graph-captured shape is timed in 25 sweeps instead of 5, the eager tail keeps 5, and the pin key names the replay counts, so curves timed with fewer replays are not reused."; \
+    test "$(git rev-parse 'HEAD^{tree}')" = "$PROFILE_REPLAYS_TREE"; \
+    test "$(git rev-parse HEAD)" = "$PROFILE_REPLAYS_PATCH_HEAD"; \
+    git -c user.name="Justin Casey" -c user.email="4348807+justincasey@users.noreply.github.com" \
+      -c commit.gpgsign=false am --quiet --committer-date-is-author-date "/work/dsv41/$LINEAR_BUDGET_PATCH"; \
     git diff --check "$VLLM_PATCH_HEAD" HEAD; \
     test -z "$(git status --porcelain --untracked-files=all)"; \
     test "$(git rev-parse 'HEAD^{tree}')" = "$DSV41_VLLM_TREE"; \
@@ -573,9 +601,9 @@ LABEL org.opencontainers.image.source="https://github.com/christopherowen/spark-
 
 USER root
 
-# The serving vLLM is his r6w tree plus our patches and the scale-codes and profile-replays overlays
-# (local.dsv41.vllm.* labels); the native extensions are built from his tree, which these Python-only changes
-# leave unchanged.
+# The serving vLLM is his r6w tree plus our patches, the scale-codes and profile-replays overlays and 0007, his
+# DSpark linear draft budget (local.dsv41.vllm.* labels); the native extensions are built from his tree, which
+# these Python-only changes leave unchanged.
 COPY --from=dsv41-vllm /work/build/context/dsv41-vllm-source/ /opt/spark3/candidate/vllm/
 COPY --from=fetch /work/build/context/b12x-source/ /opt/spark3/candidate/b12x/
 COPY --from=vllm-native-builder \
@@ -854,10 +882,14 @@ ARG SCALE_CODES_TILELANG_GEMM_SHA256
 ARG SCALE_CODES_TILELANG_MOE_SHA256
 ARG PROFILE_REPLAYS_REVISION
 ARG PROFILE_REPLAYS_OVERLAY
-ARG PROFILE_REPLAYS_ADAPTIVE_VERIFICATION_SHA256
+ARG LINEAR_BUDGET_REVISION
+ARG LINEAR_BUDGET_OVERLAY_REVISION
+ARG LINEAR_BUDGET_PATCH
+ARG LINEAR_BUDGET_ADAPTIVE_VERIFICATION_SHA256
+ARG LINEAR_BUDGET_SPECULATIVE_SHA256
 
 LABEL org.opencontainers.image.title="dsv41-1017-ds41f" \
-      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on a four-DGX-Spark RoCE ring: spark-ds41f r6w plus the dsv41-1017 patches (reasoning-effort aliases, weight snapshots, vLLM #60945 and #61161 block verification fixes, CED decoder skip of unread prefill chunks, no DSpark MTP buffer), spark-ds41f's MoE scale-codes overlay and its 25-replay DSpark cost profile" \
+      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on a four-DGX-Spark RoCE ring: spark-ds41f r6w plus the dsv41-1017 patches (reasoning-effort aliases, weight snapshots, vLLM #60945 and #61161 block verification fixes, CED decoder skip of unread prefill chunks, no DSpark MTP buffer), spark-ds41f's MoE scale-codes overlay and its DSpark draft budget by a fixed linear step cost (r6x's vLLM 0184)" \
       org.opencontainers.image.licenses="Apache-2.0" \
       local.dsv41.engine="spark-ds41f r6w" \
       local.dsv41.spark-ds41f.upstream="${SPARK_DS41F_UPSTREAM}" \
@@ -868,6 +900,9 @@ LABEL org.opencontainers.image.title="dsv41-1017-ds41f" \
       local.dsv41.vllm.scale-codes.overlay="${SCALE_CODES_OVERLAY}" \
       local.dsv41.vllm.profile-replays.revision="${PROFILE_REPLAYS_REVISION}" \
       local.dsv41.vllm.profile-replays.overlay="${PROFILE_REPLAYS_OVERLAY}" \
+      local.dsv41.vllm.linear-budget.revision="${LINEAR_BUDGET_REVISION}" \
+      local.dsv41.vllm.linear-budget.overlay-revision="${LINEAR_BUDGET_OVERLAY_REVISION}" \
+      local.dsv41.vllm.linear-budget.patch="${LINEAR_BUDGET_PATCH}" \
       local.dsv41.vllm.patch-head="${DSV41_VLLM_PATCH_HEAD}" \
       local.dsv41.vllm.tree="${DSV41_VLLM_TREE}"
 
@@ -881,12 +916,15 @@ COPY --from=fetch /work/out/smoke.py /work/out/REVISION /opt/spark-ds41f/
 
 # The patched TileLang carries the SM120-family block-scaled MMA on SM121 (patches/tilelang 0001-0003),
 # and the serving vLLM carries our reasoning-effort aliases, the weight-snapshot loader hook, the
-# scale-codes overlay's three files byte for byte, our patches 0003-0006, and the profile-replays overlay's
-# file byte for byte; none of these files is importable without a GPU, so all are read as files.
+# scale-codes overlay's three files byte for byte, our patches 0003-0006, and the linear-budget overlay's
+# adaptive_verification.py and speculative.py byte for byte (0007, which replaced the profile-replays file) with
+# its model runner change beside 0006's guard; none of these files is importable without a GPU, so all are read
+# as files.
 RUN SCALE_CODES_FUSED_MOE_TILELANG_SHA256=${SCALE_CODES_FUSED_MOE_TILELANG_SHA256} \
     SCALE_CODES_TILELANG_GEMM_SHA256=${SCALE_CODES_TILELANG_GEMM_SHA256} \
     SCALE_CODES_TILELANG_MOE_SHA256=${SCALE_CODES_TILELANG_MOE_SHA256} \
-    PROFILE_REPLAYS_ADAPTIVE_VERIFICATION_SHA256=${PROFILE_REPLAYS_ADAPTIVE_VERIFICATION_SHA256} \
+    LINEAR_BUDGET_ADAPTIVE_VERIFICATION_SHA256=${LINEAR_BUDGET_ADAPTIVE_VERIFICATION_SHA256} \
+    LINEAR_BUDGET_SPECULATIVE_SHA256=${LINEAR_BUDGET_SPECULATIVE_SHA256} \
     python3 - <<'PY'
 import ast
 import hashlib
@@ -947,16 +985,15 @@ assert "and not spec_config.use_dspark()" in model, "DSpark MTP buffer removal (
 assert "prefill_sp_skips_mtp_buffer" not in model, "DSpark MTP buffer removal (0006) incomplete"
 print("DSpark runs without the pre-collapse MTP buffer")
 
-replays = spec / "adaptive_verification.py"
-digest = hashlib.sha256(replays.read_bytes()).hexdigest()
-assert digest == os.environ["PROFILE_REPLAYS_ADAPTIVE_VERIFICATION_SHA256"], (
-    f"vllm/v1/worker/gpu/spec_decode/adaptive_verification.py is not the profile-replays overlay's file ({digest})"
-)
-counts = {
-    node.targets[0].id: ast.literal_eval(node.value)
-    for node in ast.parse(replays.read_text()).body
-    if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") in ("_PROFILE_REPLAYS", "_TAIL_REPLAYS")
-}
-assert counts == {"_PROFILE_REPLAYS": 25, "_TAIL_REPLAYS": 5}, counts
-print("DSpark cost profile: 25 replays of each graph-captured shape, 5 of the eager tail (pin key names both)")
+for path, pin in (
+    ("v1/worker/gpu/spec_decode/adaptive_verification.py", "LINEAR_BUDGET_ADAPTIVE_VERIFICATION_SHA256"),
+    ("config/speculative.py", "LINEAR_BUDGET_SPECULATIVE_SHA256"),
+):
+    digest = hashlib.sha256((vllm / path).read_bytes()).hexdigest()
+    assert digest == os.environ[pin], f"vllm/{path} is not the linear-budget overlay's file ({digest})"
+runner = (vllm / "v1/worker/gpu/model_runner.py").read_text()
+assert "self.adaptive_verification.warm_tail_shapes(" in runner, "DSpark linear budget (0007) missing from the runner"
+assert "adaptive_verification_row_cost=(" in runner, "DSpark linear budget (0007) missing from the runner"
+assert runner.count("if pre_hc_hidden_states is not None:") == 2, "0006's None guard lost in the runner"
+print("DSpark draft budget by a linear step cost (adaptive_verification_row_cost, default 0.02), nothing timed")
 PY
