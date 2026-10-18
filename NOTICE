@@ -56,10 +56,11 @@ Patch authors, from the patch headers of the series above: Christopher Owen (all
 TileKernels patches, three of four NCCL patches, and 172 of 173 vLLM patches); carlosmolina0615 (vLLM 0045,
 the CED decoder's MoE routed with its own padding mask in TileLang); Stanislav Bardyuk (NCCL 0001,
 NVIDIA/nccl#2393). The vLLM series credits huxiaofengtiger (NVIDIA Developer Forums) for reported issues,
-and ports vllm-project/vllm#51694. The scale-codes and profile-replays overlays are by Christopher Owen. Our patches
-(docker/0001-*.patch to docker/0006-*.patch) are by Justin Casey; 0003 and 0004 port vllm-project/vllm#60945 by
-Chauncey (chaunceyjiang) and vllm-project/vllm#61161 by DimensionSTP (Apache-2.0, the vLLM project); 0005 and
-0006 change Local Inference Lab's and Christopher Owen's DeepSeek V4.1 code paths, 0005 after the bounded
-decoder replay idea of vllm-project/vllm#58132 (ivanium) and #59894 (gcanlin), porting no upstream code.
+and ports vllm-project/vllm#51694. The scale-codes and profile-replays overlays are by Christopher Owen. Our
+patches (docker/0001-*.patch to docker/0006-*.patch) are by Justin Casey; 0003 and 0004 port
+vllm-project/vllm#60945 by Chauncey (chaunceyjiang) and vllm-project/vllm#61161 by DimensionSTP (Apache-2.0, the
+vLLM project); 0005 and 0006 change Local Inference Lab's and Christopher Owen's DeepSeek V4.1 code paths, 0005
+after the bounded decoder replay idea of vllm-project/vllm#58132 (ivanium) and #59894 (gcanlin), porting no
+upstream code.
 
 Full credits, including prior art used as inspiration only: README.md, section "Credits".
