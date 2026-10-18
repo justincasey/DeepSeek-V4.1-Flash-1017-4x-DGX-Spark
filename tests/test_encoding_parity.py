@@ -162,7 +162,8 @@ def main() -> int:
         for effort in ("low", "high", "max", 30):
             ok &= compare(f"effort_{effort}", enc.encode_messages(base, thinking_mode="thinking", reasoning_effort=effort),
                           base, None, {"thinking": True, "reasoning_effort": effort})
-        for alias, tier in (("minimal", "low"), ("medium", "high"), ("xhigh", "max")):
+        # xhigh keeps its pre-1017 budget of 75 (= high), as in the Local Inference Lab fork and spark-ds41f.
+        for alias, tier in (("minimal", "low"), ("medium", "high"), ("xhigh", "high")):
             ok &= compare(f"effort_alias_{alias}", enc.encode_messages(base, thinking_mode="thinking", reasoning_effort=tier),
                           base, None, {"thinking": True, "reasoning_effort": alias})
 

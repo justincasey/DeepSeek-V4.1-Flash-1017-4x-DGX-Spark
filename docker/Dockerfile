@@ -1,42 +1,784 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 # SPDX-License-Identifier: Apache-2.0
 #
-# DeepSeek-V4.1-Flash-1017, native checkpoint (MXFP4 routed experts, FP8 dense), on DGX Spark (GB10, sm_121).
+# DeepSeek-V4.1-Flash-1017 on four DGX Sparks: Christopher Owen's spark-ds41f engine, release r6v
+# (experiments/2026-10-17-r6v), rebuilt from scratch, plus one patch of ours on top.
 #
-# Base: DeepSeek's vLLM V4.1 image, pinned to its arm64 manifest by digest.
-# On top: upstream GB10 runtime fixes, fetched at a pinned commit and applied unmodified by
-# docker/apply-upstream.sh (credits there and in NOTICE). Build context: repository root.
-ARG BASE_IMAGE=vllm/vllm-openai:deepseekv41-flash-0909@sha256:d84a123255b822fc22508635218000187221794f59c0694c33b0650d1e377d58
-FROM ${BASE_IMAGE}
+#   docker build -f docker/Dockerfile -t dsv41-1017-ds41f:r6v .     (context: the repository root; only
+#                                                                    docker/ is read; linux/arm64 only)
+#
+# Every input is pinned below, by commit or digest. The `fetch` stage clones spark-ds41f at
+# SPARK_DS41F_REVISION and runs ITS OWN `bin/spark build prepare` code (build_inputs, prepare_project,
+# prepare_cutlass, prepare_wheels, export_source, vllm_deletions, build_problems) against the r6v lock:
+# each upstream is fetched at its pinned commit, its patch series is applied unmodified with `git am`
+# (fixed committer, so the patch heads reproduce the source manifest's commits byte for byte), and the
+# patch-set fingerprint, patch head, tree and TileLang's submodule commits must equal the manifest's.
+# `ds41f-prepare --check-pins` first checks that the ARGs below and spark-ds41f's lock/manifest agree.
+# Any mismatch, missing patch or patch that does not apply fails the build.
+#
+# The build stages after `fetch` are spark-ds41f's docker/Dockerfile at that commit (Apache-2.0,
+# Copyright Christopher Owen), with his named build contexts replaced by `fetch`'s exports and his
+# build-time checks kept verbatim. Our additions: the `dsv41-vllm` stage (our reasoning-effort alias
+# patch, docker/0001-*.patch, on top of his vLLM series), and the final `dsv41` stage (the TileLang
+# SM12x block-scaled MMA check, his memguard scripts and GPU smoke script, our labels).
+#
+# Resource use (spark-ds41f's build policy): needs ~64 GiB MemAvailable to start; VLLM_COMPILE_JOBS x
+# VLLM_NVCC_THREADS sized at 8 GiB per job. Build on an idle node.
+
+# ── pins ────────────────────────────────────────────────────────────────────────────────────────────
+ARG BASE_IMAGE=docker.io/vllm/vllm-openai@sha256:3cf14c52765a0f0c2f09035e05fa79e1e4b2f9788b64afa90fa41c1ff12d29cf
+ARG BASE_IMAGE_NAME=docker.io/vllm/vllm-openai
+ARG BASE_IMAGE_DIGEST=sha256:3cf14c52765a0f0c2f09035e05fa79e1e4b2f9788b64afa90fa41c1ff12d29cf
+ARG VLLM_BASE_SOURCE_REVISION=af1c01499b289be555c475669ba50a88e96d846e
+
+ARG SPARK_DS41F_UPSTREAM=https://github.com/christopherowen/spark-ds41f
+ARG SPARK_DS41F_REVISION=cbf47749e22e25f4feb3ba9f455e8a89596eacbe
+ARG SPARK_DS41F_LOCK=experiments/2026-10-17-r6v/upstreams.lock.json
+ARG SPARK_DS41F_PROFILE=experiments/2026-10-17-r6v/r6v-tp4-1017.json
+
+ARG VLLM_UPSTREAM=https://github.com/local-inference-lab/vllm
+ARG VLLM_REF=integration/karmic-kraken-beta
+ARG VLLM_REVISION=19f2c20ed4d64ae22bd009ceacadd85e2a81e354
+ARG VLLM_SERIES=experiments/2026-10-17-r6v/vllm/series
+ARG VLLM_PATCHSET_SHA256=00b1018e0078de4fc986554d9eccc8ed1e7f404e54268ba4e71054e03396c0c4
+ARG VLLM_PATCH_HEAD=c001cc4ed77bef686ddd006be0dd706b9c15d7b7
+ARG VLLM_TREE=d11e9836e61bc2b763d6805d3324ec8fb5376360
+ARG VLLM_CANONICAL_UPSTREAM=https://github.com/vllm-project/vllm
+
+ARG B12X_UPSTREAM=https://github.com/local-inference-lab/b12x
+ARG B12X_REF=integration/karmic-kraken-beta
+ARG B12X_REVISION=236ddff04a5f5064084b46464800b70b34ec7d8c
+ARG B12X_SERIES=experiments/2026-10-08-lil-rebase/b12x/series
+ARG B12X_PATCHSET_SHA256=3b0eb04a5870302937679badb436bfc9aa4afadd19333eb96d33148004ea1f09
+ARG B12X_PATCH_HEAD=69e5795e2141fbb5fa2b3af096d51e754939bb41
+ARG B12X_TREE=1a647a311ca55d45070ab83d60668d9c8fb8886c
+
+ARG NCCL_UPSTREAM=https://github.com/NVIDIA/nccl
+ARG NCCL_REF=refs/tags/v2.30.7-1
+ARG NCCL_REVISION=73cf112295c33aee2b895f329f592f2a9b4b0f97
+ARG NCCL_SERIES=experiments/2026-10-03-balanced-policy/nccl-adaptive/series
+ARG NCCL_PATCHSET_SHA256=06f133b1709622d64b0ab87fc32f29d167f4617ca9386117596008d400a8d40c
+ARG NCCL_PATCH_HEAD=eeacf1c6343f0499e4e7ab20ec7eecfb6f62eda6
+ARG NCCL_TREE=6af10aa730a64fcee8781d62340a9c9184e79469
+
+ARG TILELANG_UPSTREAM=https://github.com/tile-ai/tilelang
+ARG TILELANG_REF=main
+ARG TILELANG_REVISION=b95ee4ffb52ae26e15619cad38c6f41e7e0a2b46
+ARG TILELANG_SERIES=experiments/2026-10-17-r6u/tilelang/series
+ARG TILELANG_PATCHSET_SHA256=7d097972b85ae6817f2e7314ed3446f9d61d3e77691c2d0097dc18548d11ee07
+ARG TILELANG_PATCH_HEAD=a0e66d71fe7617216f2de5d86c3b088595367387
+ARG TILELANG_TREE=222b895d04ee6cd75179155d06e0c0d450636f51
+ARG TILELANG_VERSION=0.1.15
+
+ARG TILE_KERNELS_UPSTREAM=https://github.com/deepseek-ai/TileKernels
+ARG TILE_KERNELS_REF=main
+ARG TILE_KERNELS_REVISION=66258df6175d2f630ffecb04c5ab66bff8a2ae6a
+ARG TILE_KERNELS_SERIES=patches/tile_kernels/series
+ARG TILE_KERNELS_PATCHSET_SHA256=3fed91bbd083d38b08de1bd7ebe25dbc7aec9d36f4e2b8f7adbfb497b128c22c
+ARG TILE_KERNELS_PATCH_HEAD=edfa64d018bc64006fcb07c95c32fa196363c0ae
+ARG TILE_KERNELS_TREE=cb2fa41c8af290204c81c547ed678ebf957cca53
+ARG TILE_KERNELS_VERSION=2.0.0
+
+ARG SPARKNET_UPSTREAM=https://github.com/christopherowen/dgx-spark-networking
+ARG SPARKNET_REF=timeout-stop
+ARG SPARKNET_REVISION=3bc8d10104a5012244a0424d7dfc1107a72eafab
+ARG SPARKNET_SERIES=-
+ARG SPARKNET_PATCHSET_SHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ARG SPARKNET_PATCH_HEAD=3bc8d10104a5012244a0424d7dfc1107a72eafab
+ARG SPARKNET_TREE=f72599fa212e894d67ee114553e628ab05daf2da
+ARG SPARKNET_VERSION=0.3.0
+
+ARG CUTLASS_UPSTREAM=https://github.com/NVIDIA/cutlass
+ARG CUTLASS_REVISION=cb4247394dd82148787aed73e5dc7cef33cbf862
+ARG CUTLASS_RELEASE_TAG=v4.7.1
+
+# Ours, applied after his vLLM series (Apache-2.0, this repository).
+ARG DSV41_VLLM_PATCH=0001-deepseek-v41-reasoning-effort-minimal-medium.patch
+ARG DSV41_VLLM_PATCH_HEAD=dc6bfcd7e00f50057bd1274ca37100752465d7d7
+ARG DSV41_VLLM_TREE=18d715667f1b91ed8c176a8402bdcc0e1e11c8a0
+
+# Compile parallelism: spark-ds41f sizes jobs from MemAvailable (8 GiB per job, at most 10, two NVCC
+# threads each); on a GB10's 20 cores that is 8, the value its r6v build used.
+ARG VLLM_COMPILE_JOBS=8
+ARG VLLM_NVCC_THREADS=2
+ARG TILELANG_COMPILE_JOBS=8
+ARG NCCL_COMPILE_JOBS=4
+
+# ── fetch: spark-ds41f's own build preparation at the pinned commit ─────────────────────────────────
+FROM ${BASE_IMAGE} AS fetch
+
 USER root
-ARG BASE_IMAGE
-
-ARG UPSTREAM_REPO=https://github.com/vcruz305/DeepSeek-V4.1-Flash-EXL3-DGX-Spark-recipe.git
-ARG UPSTREAM_SHA=e120f52e599b4244df87f6c3e49ef12f3ecb67ab
-
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+ENV PYTHONDONTWRITEBYTECODE=1
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone --quiet "$UPSTREAM_REPO" /opt/upstream/dsv41-exl3-recipe \
-    && git -C /opt/upstream/dsv41-exl3-recipe checkout --quiet --detach "$UPSTREAM_SHA" \
-    && test "$(git -C /opt/upstream/dsv41-exl3-recipe rev-parse HEAD)" = "$UPSTREAM_SHA"
+ARG SPARK_DS41F_UPSTREAM
+ARG SPARK_DS41F_REVISION
+RUN set -eux; \
+    git init --quiet /work/spark-ds41f; \
+    cd /work/spark-ds41f; \
+    git remote add origin "$SPARK_DS41F_UPSTREAM"; \
+    git fetch --quiet --depth 1 --no-tags origin "$SPARK_DS41F_REVISION"; \
+    git checkout --quiet --detach FETCH_HEAD; \
+    test "$(git rev-parse HEAD)" = "$SPARK_DS41F_REVISION"; \
+    test -z "$(git status --porcelain --untracked-files=all)"
 
-COPY docker/apply-upstream.sh /opt/dsv41/apply-upstream.sh
-RUN bash /opt/dsv41/apply-upstream.sh /opt/upstream/dsv41-exl3-recipe
+# Drives spark-ds41f's bin/spark functions; the only thing it substitutes is configuration(), which
+# would otherwise need a site node map, with the pinned lock.
+COPY --chmod=0755 <<'EOF' /usr/local/bin/ds41f-prepare
+#!/usr/bin/env python3
+"""ds41f-prepare --check-pins | --only PART | --all | --directory | --smoke | --export SRC DEST"""
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
 
-# DeepSeek-V4.1-Flash-1017 prompt format: the publisher's encoder from the pinned checkpoint revision,
-# sha256-checked against the recipe manifest; the build fails unless its golden fixtures render exactly.
-ARG MODEL_REPO=deepseek-ai/DeepSeek-V4.1-Flash-1017
-ARG MODEL_REVISION=1bae0e1088993b9b82de08f59de5be5a34e42170
-COPY config/DeepSeek-V4.1-Flash-1017.sha256 /opt/dsv41/checkpoint.sha256
-COPY docker/encoding-1017.py /opt/dsv41/encoding-1017.py
-RUN python3 /opt/dsv41/encoding-1017.py --repo "$MODEL_REPO" --revision "$MODEL_REVISION" \
-      --manifest /opt/dsv41/checkpoint.sha256
+ROOT = Path("/work/spark-ds41f")
+loader = importlib.machinery.SourceFileLoader("spark", str(ROOT / "bin/spark"))
+spec = importlib.util.spec_from_loader("spark", loader)
+spark = importlib.util.module_from_spec(spec)
+loader.exec_module(spark)
+env = os.environ
+lock = json.loads((ROOT / env["SPARK_DS41F_LOCK"]).read_text(encoding="utf-8"))
+spark.configuration = lambda args=None: ({}, {}, lock)
+command = sys.argv[1:]
 
-# GB10 serving knobs vLLM does not expose (DSV41_MXFP8_BACKEND).
-COPY docker/gb10-tuning.py /opt/dsv41/gb10-tuning.py
-RUN python3 /opt/dsv41/gb10-tuning.py
 
-LABEL org.opencontainers.image.title="dsv41-1017-spark" \
-      ai.dsv41.base="${BASE_IMAGE}" \
-      ai.dsv41.upstream="${UPSTREAM_REPO}@${UPSTREAM_SHA}"
-WORKDIR /workspace
+def check_pins() -> None:
+    inputs = spark.build_inputs(lock)  # refuses missing patches and unrecorded patch sets
+    sources = lock["sources"]
+    base = sources["vllm_base_image"]
+    problems = []
+
+    def want(what, actual, expected):
+        if actual != expected:
+            problems.append(f"{what}: spark-ds41f records {actual!r}, the Dockerfile pins {expected!r}")
+
+    want("base image", inputs["base_image"], env["BASE_IMAGE"])
+    want("base image name", base["upstream"], env["BASE_IMAGE_NAME"])
+    want("base image digest", base["recorded_base_digest"], env["BASE_IMAGE_DIGEST"])
+    want("base source revision", inputs["base_source_revision"], env["VLLM_BASE_SOURCE_REVISION"])
+    want("cutlass upstream", inputs["cutlass"]["upstream"].removesuffix(".git"), env["CUTLASS_UPSTREAM"])
+    want("cutlass revision", inputs["cutlass"]["revision"], env["CUTLASS_REVISION"])
+    want("cutlass tag", inputs["cutlass"]["release_tag"], env["CUTLASS_RELEASE_TAG"])
+    projects = spark.build_projects(inputs)
+    want("projects", list(projects), ["vllm", "b12x", "nccl", "tilelang", "tile_kernels", "sparknet"])
+    want("runtime stage", spark.runtime_stage(inputs), "runtime-tilelang-sparknet")
+    want("vllm canonical upstream", inputs["vllm"]["canonical_upstream"].removesuffix(".git"),
+         env["VLLM_CANONICAL_UPSTREAM"])
+    for name in projects:
+        record, prefix = inputs[name], name.upper()
+        want(f"{name} upstream", record["upstream"].removesuffix(".git"), env[f"{prefix}_UPSTREAM"])
+        want(f"{name} ref", record["tracking_ref"].removeprefix("refs/heads/"), env[f"{prefix}_REF"])
+        want(f"{name} revision", record["revision"], env[f"{prefix}_REVISION"])
+        want(f"{name} series", record["patch_series"] or "-", env[f"{prefix}_SERIES"])
+        want(f"{name} patch set", record["patchset_sha256"], env[f"{prefix}_PATCHSET_SHA256"])
+        want(f"{name} patch head", record["patch_head"], env[f"{prefix}_PATCH_HEAD"])
+        want(f"{name} tree", record["expected_tree"], env[f"{prefix}_TREE"])
+        if "version" in record:
+            want(f"{name} version", record["version"], env[f"{prefix}_VERSION"])
+    profile = json.loads((ROOT / env["SPARK_DS41F_PROFILE"]).read_text(encoding="utf-8"))
+    want("profile lock", profile["set"]["upstreams_config"], env["SPARK_DS41F_LOCK"])
+    want("profile vLLM tree", profile["set"]["container"]["expected_labels"]["local.spark3.vllm.tree"],
+         env["VLLM_TREE"])
+    if problems:
+        raise SystemExit("pins disagree with spark-ds41f:\n  " + "\n  ".join(problems))
+    print("pins agree with", env["SPARK_DS41F_LOCK"], "and", lock["source_manifest"])
+
+
+if command == ["--check-pins"]:
+    check_pins()
+elif command[:1] == ["--only"] and len(command) == 2:
+    sys.exit(spark.command_build_prepare(argparse.Namespace(only=command[1], cluster_config=None, shape=None)))
+elif command == ["--all"]:
+    sys.exit(spark.command_build_prepare(argparse.Namespace(only=None, cluster_config=None, shape=None)))
+elif command == ["--directory"]:
+    print(spark.build_directory(spark.build_inputs(lock)))
+elif command == ["--smoke"]:
+    sys.stdout.write(spark.smoke_script(lock))
+elif command[:1] == ["--export"] and len(command) == 3:
+    spark.export_source(Path(command[1]), Path(command[2]))
+    spark.normalize_modes(Path(command[2]))
+else:
+    raise SystemExit(__doc__)
+EOF
+
+ARG SPARK_DS41F_LOCK
+ARG SPARK_DS41F_PROFILE
+ARG BASE_IMAGE
+ARG BASE_IMAGE_NAME
+ARG BASE_IMAGE_DIGEST
+ARG VLLM_BASE_SOURCE_REVISION
+ARG VLLM_UPSTREAM
+ARG VLLM_REF
+ARG VLLM_REVISION
+ARG VLLM_SERIES
+ARG VLLM_PATCHSET_SHA256
+ARG VLLM_PATCH_HEAD
+ARG VLLM_TREE
+ARG VLLM_CANONICAL_UPSTREAM
+ARG B12X_UPSTREAM
+ARG B12X_REF
+ARG B12X_REVISION
+ARG B12X_SERIES
+ARG B12X_PATCHSET_SHA256
+ARG B12X_PATCH_HEAD
+ARG B12X_TREE
+ARG NCCL_UPSTREAM
+ARG NCCL_REF
+ARG NCCL_REVISION
+ARG NCCL_SERIES
+ARG NCCL_PATCHSET_SHA256
+ARG NCCL_PATCH_HEAD
+ARG NCCL_TREE
+ARG TILELANG_UPSTREAM
+ARG TILELANG_REF
+ARG TILELANG_REVISION
+ARG TILELANG_SERIES
+ARG TILELANG_PATCHSET_SHA256
+ARG TILELANG_PATCH_HEAD
+ARG TILELANG_TREE
+ARG TILELANG_VERSION
+ARG TILE_KERNELS_UPSTREAM
+ARG TILE_KERNELS_REF
+ARG TILE_KERNELS_REVISION
+ARG TILE_KERNELS_SERIES
+ARG TILE_KERNELS_PATCHSET_SHA256
+ARG TILE_KERNELS_PATCH_HEAD
+ARG TILE_KERNELS_TREE
+ARG TILE_KERNELS_VERSION
+ARG SPARKNET_UPSTREAM
+ARG SPARKNET_REF
+ARG SPARKNET_REVISION
+ARG SPARKNET_SERIES
+ARG SPARKNET_PATCHSET_SHA256
+ARG SPARKNET_PATCH_HEAD
+ARG SPARKNET_TREE
+ARG SPARKNET_VERSION
+ARG CUTLASS_UPSTREAM
+ARG CUTLASS_REVISION
+ARG CUTLASS_RELEASE_TAG
+RUN ds41f-prepare --check-pins
+
+# One layer per part, so a network failure repeats only that part; `--all` then reuses every verified
+# part, exports the contexts, lists the vLLM deletions and checks everything again (build_problems).
+RUN ds41f-prepare --only vllm
+RUN ds41f-prepare --only b12x
+RUN ds41f-prepare --only nccl
+RUN ds41f-prepare --only tilelang
+RUN ds41f-prepare --only tile_kernels
+RUN ds41f-prepare --only sparknet
+RUN ds41f-prepare --only cutlass
+RUN ds41f-prepare --only wheels
+RUN set -eux; \
+    ds41f-prepare --all; \
+    mv "$(ds41f-prepare --directory)" /work/build; \
+    mkdir -p /work/out; \
+    ds41f-prepare --smoke > /work/out/smoke.py; \
+    printf '%s\n' "$SPARK_DS41F_REVISION" > /work/out/REVISION
+
+# ── dsv41-vllm: our patch on his vLLM series ───────────────────────────────────────────────────────
+FROM fetch AS dsv41-vllm
+
+ARG SPARK_DS41F_LOCK
+ARG VLLM_PATCH_HEAD
+ARG DSV41_VLLM_PATCH
+ARG DSV41_VLLM_PATCH_HEAD
+ARG DSV41_VLLM_TREE
+COPY docker/${DSV41_VLLM_PATCH} /work/dsv41/
+RUN set -eux; \
+    cd /work/build/src/vllm; \
+    test "$(git rev-parse HEAD)" = "$VLLM_PATCH_HEAD"; \
+    git -c user.name="Justin Casey" -c user.email="4348807+justincasey@users.noreply.github.com" \
+      -c commit.gpgsign=false am --quiet --committer-date-is-author-date "/work/dsv41/$DSV41_VLLM_PATCH"; \
+    git diff --check "$VLLM_PATCH_HEAD" HEAD; \
+    test -z "$(git status --porcelain --untracked-files=all)"; \
+    test "$(git rev-parse 'HEAD^{tree}')" = "$DSV41_VLLM_TREE"; \
+    test "$(git rev-parse HEAD)" = "$DSV41_VLLM_PATCH_HEAD"; \
+    test -z "$(git diff --name-only --diff-filter=D "$VLLM_PATCH_HEAD" HEAD)"; \
+    ds41f-prepare --export /work/build/src/vllm /work/build/context/dsv41-vllm-source
+
+# ── spark-ds41f docker/Dockerfile @ SPARK_DS41F_REVISION, contexts from `fetch` ────────────────────
+# Canonical ARM64 nightly af1c0149, the same runtime base as the 2026-09-20
+# weekend image. Local Inference Lab's karmic-kraken-beta vLLM sits seven
+# commits after it with no native-source changes in between, so only the two
+# stable CUDA extensions are rebuilt from the overlaid source.
+FROM ${BASE_IMAGE} AS vllm-native-builder
+
+USER root
+
+COPY --from=fetch /work/build/context/vllm-source/ /workspace/vllm/
+# CUTLASS headers come from a checkout of the tag vLLM pins.
+COPY --from=fetch /work/build/context/cutlass-source/ /workspace/cutlass/
+ENV VLLM_CUTLASS_SRC_DIR=/workspace/cutlass
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      cmake \
+      git \
+    && rm -rf /var/lib/apt/lists/*
+ENV TORCH_CUDA_ARCH_LIST=12.1a
+ARG VLLM_COMPILE_JOBS
+ARG VLLM_NVCC_THREADS
+# Only the two stable extensions are rebuilt; the external projects (DeepGEMM,
+# FlashMLA, flash-attention, Triton kernels, ...) produce other native modules
+# that are taken prebuilt from the base image. Skip their configure-time
+# clones: GitHub intermittently answers anonymous clones from this network with
+# 401. A configure retry remains for any residual fetch.
+RUN --mount=type=secret,id=github_token,required=false \
+    set -eu; \
+    if [ -s /run/secrets/github_token ]; then \
+      github_auth=$(printf 'x-access-token:%s' "$(cat /run/secrets/github_token)" \
+        | base64 | tr -d '\n'); \
+      export GIT_CONFIG_COUNT=1; \
+      export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader; \
+      export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $github_auth"; \
+    fi; \
+    python_path=$(python3 -c 'import sys; print(":".join(sys.path))'); \
+    sed -i -E 's#^([[:space:]]*)include\(cmake/external_projects/[a-z0-9_]+\.cmake\)#\1message(STATUS "spark: external project skipped")#' \
+      /workspace/vllm/CMakeLists.txt; \
+    if grep -n 'include(cmake/external_projects/' /workspace/vllm/CMakeLists.txt; then exit 1; fi; \
+    grep -q '#define CUTLASS_MAJOR 4' /workspace/cutlass/include/cutlass/version.h; \
+    attempt=1; \
+    until cmake -S /workspace/vllm -B /tmp/vllm-native -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DVLLM_TARGET_DEVICE=cuda \
+      -DVLLM_PYTHON_EXECUTABLE=/usr/bin/python3 \
+      "-DVLLM_PYTHON_PATH=$python_path" \
+      -DFETCHCONTENT_BASE_DIR=/workspace/vllm/.deps \
+      -DCMAKE_JOB_POOL_COMPILE:STRING=compile \
+      -DCMAKE_JOB_POOLS:STRING=compile=${VLLM_COMPILE_JOBS} \
+      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+      -DNVCC_THREADS=${VLLM_NVCC_THREADS}; do \
+      if [ "$attempt" -ge 8 ]; then exit 1; fi; \
+      echo "cmake configure attempt $attempt failed; retrying in 45 s"; \
+      attempt=$((attempt + 1)); sleep 45; \
+    done; \
+    cmake --build /tmp/vllm-native -j=${VLLM_COMPILE_JOBS} \
+      --target _C_stable_libtorch _moe_C_stable_libtorch; \
+    cmake --install /tmp/vllm-native --prefix /opt/vllm-native \
+      --component _C_stable_libtorch; \
+    cmake --install /tmp/vllm-native --prefix /opt/vllm-native \
+      --component _moe_C_stable_libtorch; \
+    test -f /opt/vllm-native/vllm/_C_stable_libtorch.abi3.so; \
+    test -f /opt/vllm-native/vllm/_moe_C_stable_libtorch.abi3.so
+
+# NCCL 2.30.7 (the base image's nvidia-nccl-cu13 wheel), rebuilt from the
+# pinned release tag with patches/nccl for SM121 only. The runtime stage
+# replaces the wheel's libnccl.so.2 with it.
+FROM ${BASE_IMAGE} AS nccl-builder
+
+USER root
+
+COPY --from=fetch /work/build/context/nccl-source/ /workspace/nccl/
+ARG NCCL_COMPILE_JOBS
+RUN set -eux; \
+    make -C /workspace/nccl -j${NCCL_COMPILE_JOBS} src.build \
+      CUDA_HOME=/usr/local/cuda \
+      NVCC_GENCODE="-gencode=arch=compute_121,code=sm_121"; \
+    mkdir -p /opt/nccl; \
+    cp -L /workspace/nccl/build/lib/libnccl.so.2 /opt/nccl/libnccl.so.2; \
+    sha256sum /opt/nccl/libnccl.so.2 | cut -d" " -f1 > /opt/nccl/libnccl.so.2.sha256
+
+# TileLang 0.1.15 from tile-ai/tilelang with patches/tilelang and its pinned
+# submodules, and DeepSeek's TileKernels, as wheels for the TileLang kernel
+# backend. TileLang's CUDA stubs leave kernel compilation to run time, so no
+# GPU architecture is fixed here. The isolated build environment is held to
+# the base image's z3-solver, which TileLang links and loads at run time.
+# TileKernels takes its version from setuptools-scm, which an export without
+# Git metadata cannot supply.
+FROM ${BASE_IMAGE} AS tilelang-builder
+
+USER root
+
+COPY --from=fetch /work/build/context/tilelang-source/ /workspace/tilelang/
+COPY --from=fetch /work/build/context/tile_kernels-source/ /workspace/tile_kernels/
+ARG TILELANG_COMPILE_JOBS
+ARG TILE_KERNELS_VERSION
+RUN set -eux; \
+    z3=$(python3 -c 'import importlib.metadata as m; print(m.version("z3-solver"))'); \
+    printf 'z3-solver==%s\n' "$z3" > /tmp/tilelang-build-constraints.txt; \
+    export PIP_CONSTRAINT=/tmp/tilelang-build-constraints.txt; \
+    export PIP_BUILD_CONSTRAINT=/tmp/tilelang-build-constraints.txt; \
+    CMAKE_BUILD_PARALLEL_LEVEL=${TILELANG_COMPILE_JOBS} \
+    CMAKE_ARGS="-DUSE_CUDA=ON -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc" \
+    NO_VERSION_LABEL=1 \
+      python3 -m pip wheel --no-cache-dir --no-deps --wheel-dir /opt/tilelang \
+        /workspace/tilelang; \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_TILE_KERNELS=${TILE_KERNELS_VERSION} \
+      python3 -m pip wheel --no-cache-dir --no-deps --wheel-dir /opt/tilelang \
+        /workspace/tile_kernels; \
+    ls /opt/tilelang/tilelang-*.whl /opt/tilelang/tile_kernels-*.whl
+
+# sparknet (christopherowen/dgx-spark-networking): the one-shot RoCE
+# collectives vendored from B12X with spark's patches 0001-0011, used by the
+# TileLang family instead of b12x.comm.roce. Pure Python plus a C proxy.
+FROM ${BASE_IMAGE} AS sparknet-builder
+
+COPY --from=fetch /work/build/context/sparknet-source/ /workspace/sparknet/
+RUN python3 -m pip wheel --no-cache-dir --no-deps --wheel-dir /opt/sparknet /workspace/sparknet && \
+    ls /opt/sparknet/dgx_spark_networking-*.whl
+
+FROM ${BASE_IMAGE} AS runtime
+
+ARG BASE_IMAGE_NAME
+ARG BASE_IMAGE_DIGEST
+ARG VLLM_UPSTREAM
+ARG VLLM_REF
+ARG VLLM_REVISION
+ARG VLLM_PATCH_HEAD
+ARG VLLM_TREE
+ARG B12X_UPSTREAM
+ARG B12X_REF
+ARG B12X_REVISION
+ARG B12X_PATCH_HEAD
+ARG B12X_TREE
+ARG NCCL_UPSTREAM
+ARG NCCL_REF
+ARG NCCL_REVISION
+ARG NCCL_PATCH_HEAD
+ARG NCCL_TREE
+ARG SPARK_DS41F_REVISION
+
+LABEL org.opencontainers.image.source="https://github.com/christopherowen/spark-ds41f" \
+      org.opencontainers.image.revision="${SPARK_DS41F_REVISION}" \
+      org.opencontainers.image.base.name="${BASE_IMAGE_NAME}" \
+      org.opencontainers.image.base.digest="${BASE_IMAGE_DIGEST}" \
+      local.spark3.vllm.upstream="${VLLM_UPSTREAM}" \
+      local.spark3.vllm.ref="${VLLM_REF}" \
+      local.spark3.vllm.revision="${VLLM_REVISION}" \
+      local.spark3.vllm.patch-head="${VLLM_PATCH_HEAD}" \
+      local.spark3.vllm.tree="${VLLM_TREE}" \
+      local.spark3.b12x.upstream="${B12X_UPSTREAM}" \
+      local.spark3.b12x.ref="${B12X_REF}" \
+      local.spark3.b12x.revision="${B12X_REVISION}" \
+      local.spark3.b12x.patch-head="${B12X_PATCH_HEAD}" \
+      local.spark3.b12x.tree="${B12X_TREE}" \
+      local.spark3.nccl.upstream="${NCCL_UPSTREAM}" \
+      local.spark3.nccl.ref="${NCCL_REF}" \
+      local.spark3.nccl.revision="${NCCL_REVISION}" \
+      local.spark3.nccl.patch-head="${NCCL_PATCH_HEAD}" \
+      local.spark3.nccl.tree="${NCCL_TREE}"
+
+USER root
+
+# The serving vLLM is his r6v tree plus our patch (local.dsv41.vllm.* labels); the native
+# extensions are built from his tree, which our Python-only patch leaves unchanged.
+COPY --from=dsv41-vllm /work/build/context/dsv41-vllm-source/ /opt/spark3/candidate/vllm/
+COPY --from=fetch /work/build/context/b12x-source/ /opt/spark3/candidate/b12x/
+COPY --from=vllm-native-builder \
+  /opt/vllm-native/vllm/_C_stable_libtorch.abi3.so \
+  /opt/spark3/candidate/vllm/vllm/_C_stable_libtorch.abi3.so
+COPY --from=vllm-native-builder \
+  /opt/vllm-native/vllm/_moe_C_stable_libtorch.abi3.so \
+  /opt/spark3/candidate/vllm/vllm/_moe_C_stable_libtorch.abi3.so
+COPY --from=fetch /work/build/context/cutlass-dsl-wheels/ /tmp/cutlass-dsl-wheels/
+COPY --from=nccl-builder /opt/nccl/ /opt/spark3/nccl/
+RUN set -eux; \
+    target=/usr/local/lib/python3.12/dist-packages/nvidia/nccl/lib/libnccl.so.2; \
+    test -f "$target"; \
+    install -m 0755 /opt/spark3/nccl/libnccl.so.2 "$target"; \
+    rm /opt/spark3/nccl/libnccl.so.2
+
+# B12X builds its io_uring disk row reader at first use; it needs the header.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      liburing-dev liburing2 pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Keep install-only generated modules and matching native extensions from the
+# base install without overwriting any candidate source file, then remove the
+# files the candidate deliberately deletes relative to the base image's
+# canonical commit (listed by `bin/spark build prepare` from git).
+COPY --from=fetch /work/build/context/vllm-deletions/deleted.txt /tmp/vllm-deleted.txt
+RUN set -eux; \
+    installed=$(python3 -c \
+      'from pathlib import Path; import vllm; print(Path(vllm.__file__).parent)'); \
+    cp -a --no-clobber "$installed"/. /opt/spark3/candidate/vllm/vllm/; \
+    while read -r relative; do \
+      [ -n "$relative" ] || continue; \
+      rm -f "/opt/spark3/candidate/vllm/vllm/$relative"; \
+      echo "kept deletion: $relative"; \
+    done < /tmp/vllm-deleted.txt; \
+    rm -f /tmp/vllm-deleted.txt; \
+    test -f /opt/spark3/candidate/vllm/vllm/third_party/flashmla/flash_mla_interface.py
+
+# The nightly base installs CuTe DSL 4.7.1, which vLLM and quack-kernels require;
+# patches/b12x moves B12X's exact pin to it. Reinstall the hash-locked wheel set
+# (the same version) and B12X without dependencies.
+RUN set -eux; \
+    python3 -m pip install --no-cache-dir --no-deps --force-reinstall \
+      /tmp/cutlass-dsl-wheels/*.whl; \
+    rm -rf /tmp/cutlass-dsl-wheels; \
+    python3 -m pip install --no-cache-dir --no-build-isolation --no-deps \
+      /opt/spark3/candidate/b12x
+RUN python3 - <<'PY'
+import importlib.metadata as metadata
+
+from packaging.requirements import Requirement
+
+for raw_requirement in metadata.requires("b12x") or ():
+    requirement = Requirement(raw_requirement)
+    if requirement.marker and not requirement.marker.evaluate():
+        continue
+    installed = metadata.version(requirement.name)
+    if requirement.specifier and installed not in requirement.specifier:
+        raise RuntimeError(f"B12X requires {requirement}, but {installed} is installed")
+
+# Every package built on CuTe DSL must accept the installed version: a locked
+# wheel set older than one consumer's requirement silently breaks that consumer
+# (quack-kernels 0.6.5 imports cutlass.base_dsl.enums, new in 4.7).
+SHARED = ("nvidia-cutlass-dsl", "quack-kernels")
+for consumer in ("vllm", "quack-kernels", "flashinfer-python", "nvidia-cudnn-frontend", "tokenspeed-mla"):
+    try:
+        requirements = metadata.requires(consumer) or ()
+    except metadata.PackageNotFoundError:
+        continue
+    for raw_requirement in requirements:
+        requirement = Requirement(raw_requirement)
+        if not requirement.name.startswith(SHARED):
+            continue
+        if requirement.marker and not requirement.marker.evaluate({"extra": ""}):
+            continue
+        installed = metadata.version(requirement.name)
+        if requirement.specifier and installed not in requirement.specifier:
+            raise RuntimeError(f"{consumer} requires {requirement}, but {installed} is installed")
+PY
+
+ENV PYTHONPATH=/opt/spark3/candidate/vllm:/opt/spark3/candidate/b12x
+
+RUN LIBRARY_PATH=/usr/local/cuda/lib64/stubs python3 - <<'PY'
+import importlib.metadata as metadata
+import subprocess
+
+assert metadata.version("nvidia-cutlass-dsl") == "4.7.1"
+import cutlass.base_dsl.enums  # noqa: F401  (quack-kernels, the DS4.1 L2 prefetch)
+import quack.compile_utils  # noqa: F401
+import b12x.attention.compressed_sparse_mla  # noqa: F401
+import b12x.comm.roce  # noqa: F401
+import b12x.integration.vllm.loader  # noqa: F401
+import b12x.sequence.engram  # noqa: F401
+from b12x.comm.roce._proxy import load
+from b12x.loader._native import _build
+print("RoCE proxy ABI", load().roce_abi_version())
+native_path = _build()
+linked = subprocess.check_output(["ldd", native_path], text=True)
+assert "liburing.so" in linked, "B12X was built without io_uring row staging"
+import ctypes
+import hashlib
+
+# torch.cuda.nccl.version() reports the NCCL torch was compiled against, so
+# ask the installed library itself (NCCL_VERSION_CODE 2.30.7 = 23007).
+nccl = "/usr/local/lib/python3.12/dist-packages/nvidia/nccl/lib/libnccl.so.2"
+version = ctypes.c_int()
+assert ctypes.CDLL(nccl).ncclGetVersion(ctypes.byref(version)) == 0
+assert version.value == 23007, version.value
+with open(nccl, "rb") as handle:
+    built = open("/opt/spark3/nccl/libnccl.so.2.sha256").read().strip()
+    assert hashlib.sha256(handle.read()).hexdigest() == built, "NCCL is not the patched build"
+for name in ("_C_stable_libtorch", "_moe_C_stable_libtorch"):
+    with open(f"/opt/spark3/candidate/vllm/vllm/{name}.abi3.so", "rb") as handle:
+        assert handle.read(4) == b"\x7fELF"
+print("B12X build checks passed")
+PY
+
+# The TileLang kernel backend: the patched TileLang replaces the base image's
+# tilelang 0.1.12 (vLLM's pin), and TileKernels is added, both without
+# dependencies. Every requirement must already hold; no shared package moves
+# back to suit one consumer (docs/upstreams.md).
+FROM runtime AS runtime-tilelang
+
+ARG TILELANG_UPSTREAM
+ARG TILELANG_REF
+ARG TILELANG_REVISION
+ARG TILELANG_PATCH_HEAD
+ARG TILELANG_TREE
+ARG TILELANG_VERSION
+ARG TILE_KERNELS_UPSTREAM
+ARG TILE_KERNELS_REF
+ARG TILE_KERNELS_REVISION
+ARG TILE_KERNELS_PATCH_HEAD
+ARG TILE_KERNELS_TREE
+ARG TILE_KERNELS_VERSION
+
+LABEL local.spark3.tilelang.upstream="${TILELANG_UPSTREAM}" \
+      local.spark3.tilelang.ref="${TILELANG_REF}" \
+      local.spark3.tilelang.revision="${TILELANG_REVISION}" \
+      local.spark3.tilelang.patch-head="${TILELANG_PATCH_HEAD}" \
+      local.spark3.tilelang.tree="${TILELANG_TREE}" \
+      local.spark3.tile_kernels.upstream="${TILE_KERNELS_UPSTREAM}" \
+      local.spark3.tile_kernels.ref="${TILE_KERNELS_REF}" \
+      local.spark3.tile_kernels.revision="${TILE_KERNELS_REVISION}" \
+      local.spark3.tile_kernels.patch-head="${TILE_KERNELS_PATCH_HEAD}" \
+      local.spark3.tile_kernels.tree="${TILE_KERNELS_TREE}"
+
+RUN --mount=type=bind,from=tilelang-builder,source=/opt/tilelang,target=/tmp/tilelang-wheels \
+    python3 -m pip install --no-cache-dir --no-deps --force-reinstall \
+      /tmp/tilelang-wheels/tilelang-*.whl /tmp/tilelang-wheels/tile_kernels-*.whl
+RUN --mount=type=bind,from=tilelang-builder,source=/opt/tilelang,target=/tmp/tilelang-wheels \
+    TILELANG_VERSION=${TILELANG_VERSION} TILE_KERNELS_VERSION=${TILE_KERNELS_VERSION} \
+    python3 - <<'PY'
+import base64
+import csv
+import hashlib
+import importlib.metadata as metadata
+import io
+import os
+import zipfile
+from pathlib import Path
+
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+
+built = {
+    "tilelang": os.environ["TILELANG_VERSION"],
+    "tile_kernels": os.environ["TILE_KERNELS_VERSION"],
+}
+for name, version in built.items():
+    installed = metadata.version(name)
+    assert installed == version, f"{name} {installed} is installed, expected {version}"
+    copies = [d for d in metadata.distributions() if canonicalize_name(d.metadata["Name"] or "") == canonicalize_name(name)]
+    assert len(copies) == 1, f"{len(copies)} {name} distributions are installed"
+    # Every file of the wheel built above is installed unchanged.
+    [wheel] = Path("/tmp/tilelang-wheels").glob(f"{name}-*.whl")
+    with zipfile.ZipFile(wheel) as archive:
+        record = next(n for n in archive.namelist() if n.endswith(".dist-info/RECORD"))
+        for path, digest, _ in csv.reader(io.TextIOWrapper(archive.open(record), "utf-8")):
+            if not digest or ".dist-info/" in path or ".data/" in path:
+                continue
+            algorithm, wanted = digest.split("=", 1)
+            data = Path(copies[0].locate_file(path)).read_bytes()
+            actual = base64.urlsafe_b64encode(hashlib.new(algorithm, data).digest()).rstrip(b"=").decode()
+            assert actual == wanted, f"{name}: installed {path} is not the built file"
+
+
+def check(consumer: str, raw: str, shared: set[str] | None = None) -> None:
+    try:
+        requirement = Requirement(raw)
+    except InvalidRequirement:
+        return
+    if shared is not None and canonicalize_name(requirement.name) not in shared:
+        return
+    if requirement.marker and not requirement.marker.evaluate({"extra": ""}):
+        return
+    try:
+        installed = metadata.version(requirement.name)
+    except metadata.PackageNotFoundError:
+        raise RuntimeError(f"{consumer} requires {requirement}, which is not installed") from None
+    if requirement.specifier and not requirement.specifier.contains(installed, prereleases=True):
+        raise RuntimeError(f"{consumer} requires {requirement}, but {installed} is installed")
+
+
+for name in built:
+    for raw in metadata.requires(name) or ():
+        check(name, raw)
+
+# TileLang and B12X's CuTe DSL stack share apache-tvm-ffi, and TileKernels
+# needs TileLang: every consumer must accept the installed versions. The
+# serving vLLM is the candidate source, so its requirements/cuda.txt pins
+# apply rather than the base image's vLLM metadata.
+SHARED = {"apache-tvm-ffi", "tilelang"}
+for dist in metadata.distributions():
+    consumer = canonicalize_name(dist.metadata["Name"] or "")
+    if consumer != "vllm":
+        for raw in dist.requires or ():
+            check(consumer, raw, SHARED)
+for line in Path("/opt/spark3/candidate/vllm/requirements/cuda.txt").read_text().splitlines():
+    line = line.split("#", 1)[0].strip()
+    if line and not line.startswith("-"):
+        check("vllm (requirements/cuda.txt)", line, SHARED)
+print("TileLang build checks passed")
+PY
+
+# The TileLang runtime with sparknet's collectives. The proxy is built here,
+# into SPARKNET_ROCE_CACHE_DIR, so no compiler runs when serving starts; the
+# one-shot kernels compile on a node's first prepare into the mounted TileLang
+# cache (sparknet 0.4 has TileLang kernels only; earlier pins also had CuTe).
+FROM runtime-tilelang AS runtime-tilelang-sparknet
+
+ARG SPARKNET_UPSTREAM
+ARG SPARKNET_REF
+ARG SPARKNET_REVISION
+ARG SPARKNET_PATCH_HEAD
+ARG SPARKNET_TREE
+ARG SPARKNET_VERSION
+
+LABEL local.spark3.sparknet.upstream="${SPARKNET_UPSTREAM}" \
+      local.spark3.sparknet.ref="${SPARKNET_REF}" \
+      local.spark3.sparknet.revision="${SPARKNET_REVISION}" \
+      local.spark3.sparknet.patch-head="${SPARKNET_PATCH_HEAD}" \
+      local.spark3.sparknet.tree="${SPARKNET_TREE}"
+
+ENV SPARKNET_ROCE_CACHE_DIR=/opt/sparknet/roce
+RUN --mount=type=bind,from=sparknet-builder,source=/opt/sparknet,target=/tmp/sparknet-wheels \
+    python3 -m pip install --no-cache-dir --no-deps /tmp/sparknet-wheels/dgx_spark_networking-*.whl
+RUN SPARKNET_VERSION=${SPARKNET_VERSION} python3 - <<'PY'
+import importlib.metadata as metadata
+import os
+
+installed = metadata.version("dgx-spark-networking")
+assert installed == os.environ["SPARKNET_VERSION"], f"sparknet {installed} is installed"
+unconditional = [r for r in metadata.requires("dgx-spark-networking") or () if "extra ==" not in r]
+assert not unconditional, f"sparknet takes no runtime dependencies: {unconditional}"
+from sparknet.oneshot._proxy import load
+
+print("sparknet proxy ABI", load().roce_abi_version())
+print("sparknet build checks passed")
+PY
+
+# ── dsv41: the image (ENTRYPOINT stays the base image's ["vllm", "serve"]) ─────────────────────────
+FROM runtime-tilelang-sparknet AS dsv41
+
+ARG SPARK_DS41F_UPSTREAM
+ARG SPARK_DS41F_REVISION
+ARG DSV41_VLLM_PATCH
+ARG DSV41_VLLM_PATCH_HEAD
+ARG DSV41_VLLM_TREE
+
+LABEL org.opencontainers.image.title="dsv41-1017-ds41f" \
+      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on a four-DGX-Spark RoCE ring: spark-ds41f r6v plus the dsv41-1017 reasoning-effort alias patch" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      local.dsv41.engine="spark-ds41f r6v" \
+      local.dsv41.spark-ds41f.upstream="${SPARK_DS41F_UPSTREAM}" \
+      local.dsv41.spark-ds41f.revision="${SPARK_DS41F_REVISION}" \
+      local.dsv41.vllm.patches="${DSV41_VLLM_PATCH}" \
+      local.dsv41.vllm.patch-head="${DSV41_VLLM_PATCH_HEAD}" \
+      local.dsv41.vllm.tree="${DSV41_VLLM_TREE}"
+
+# spark-ds41f's host-side helpers at the pinned commit, unmodified, for the controller to extract
+# (memguard.sh / memguard-start.sh), and the GPU import smoke its `build image` runs after a build:
+#   docker run --rm -i --gpus all --memory=16g --memory-swap=16g --ulimit=core=0 \
+#     --entrypoint /usr/bin/python3 <image> /opt/spark-ds41f/smoke.py
+COPY --from=fetch /work/spark-ds41f/scripts/ /opt/spark-ds41f/scripts/
+COPY --from=fetch /work/spark-ds41f/LICENSE /opt/spark-ds41f/LICENSE
+COPY --from=fetch /work/out/smoke.py /work/out/REVISION /opt/spark-ds41f/
+
+# The patched TileLang carries the SM120-family block-scaled MMA on SM121 (patches/tilelang 0001-0003),
+# and the serving vLLM carries our reasoning-effort aliases; neither file is importable without a GPU,
+# so both are read as files.
+RUN python3 - <<'PY'
+import ast
+import importlib.util
+from pathlib import Path
+
+tilelang = Path(importlib.util.find_spec("tilelang").submodule_search_locations[0])
+header = (tilelang / "src/tl_templates/cuda/instruction/mma_block_scale.h").read_text()
+for marker in ("CUTLASS_ARCH_MMA_SM121A_ENABLED", "kind::mxf8f6f4", "scale_vec::2X"):
+    assert marker in header, f"TileLang's block-scaled MMA lacks {marker}: SM12x patches missing"
+assert "mxf8f6f4" in (tilelang / "cuda/op/gemm/gemm_mma_sm120.py").read_text()
+print("TileLang SM12x block-scaled MMA present")
+
+source = Path("/opt/spark3/candidate/vllm/vllm/tokenizers/deepseek_v41_encoding.py").read_text()
+mappings = next(
+    node.value for node in ast.parse(source).body
+    if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "REASONING_EFFORT_MAPPINGS"
+)
+efforts = ast.literal_eval(mappings)
+expected = {"minimal": 50, "low": 50, "medium": 75, "high": 75, "xhigh": 75, "max": 100}
+assert efforts == expected, efforts
+print("DeepSeek V4.1 reasoning efforts", efforts)
+PY

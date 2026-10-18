@@ -1,21 +1,48 @@
 DeepSeek-V4.1-Flash-1017 on four DGX Sparks (vLLM)
 
-The scripts, tests and documentation in this repository are licensed under the Apache License 2.0 (see LICENSE).
+The scripts, tests, documentation and docker/0001-deepseek-v41-reasoning-effort-minimal-medium.patch in this
+repository are licensed under the Apache License 2.0 (see LICENSE).
 
-The following third-party components are fetched at build time or mounted at run time. They are NOT
-redistributed in this repository and remain under their own licenses:
+The serving engine is built by docker/Dockerfile from the third-party components below. Each is fetched at
+image build at the pinned commit or digest and patched unmodified; none is redistributed in this repository,
+and each remains under its own license.
 
-- vLLM (Apache-2.0, the vLLM project), via DeepSeek's image vllm/vllm-openai:deepseekv41-flash-0909, pulled by
-  digest as the build base.
-- GB10 runtime fixes from vcruz305/DeepSeek-V4.1-Flash-EXL3-DGX-Spark-recipe at commit
-  e120f52e599b4244df87f6c3e49ef12f3ecb67ab (AGPL-3.0-only), cloned at image build and applied unmodified:
-  disk-backed Engram overlay by @Blackwellboy (PR #2, hardened by vcruz305 / Victor Cruz); SM120 sparse-MLA
-  fixes 01-08, DSpark fixswa and the Engram fixes by @fattchris.
-- DeepSeek's DeepSeek-V4.1-Flash-1017 reference encoder encoding/encoding.py (MIT, DeepSeek), downloaded from
-  the pinned checkpoint revision at image build. The model weights (MIT, DeepSeek) are downloaded by
-  `./dsv41.sh fetch`.
-- Switchless NCCL bundle (nccl-switchless-v0.0.1), mounted from each node and LD_PRELOADed at run time: NVIDIA
-  NCCL 2.30.7 (Apache-2.0 / BSD-3-Clause); switchless-cycle patches by SparkRing (FujitsuPolycom/sparkring,
-  Apache-2.0); hardening and packaging by Alex Ellis, OpenFaaS Ltd (Apache-2.0).
+- spark-ds41f by Christopher Owen (https://github.com/christopherowen/spark-ds41f), Apache-2.0, at commit
+  cbf47749e22e25f4feb3ba9f455e8a89596eacbe, release r6v (experiments/2026-10-17-r6v): the build preparation
+  (bin/spark), the image recipe (docker/Dockerfile, whose build stages docker/Dockerfile here follows), the
+  patch series for every component below, the serving configuration, and the memguard scripts shipped in
+  the image under /opt/spark-ds41f.
+- vLLM (Apache-2.0, the vLLM project), via Local Inference Lab's fork
+  (https://github.com/local-inference-lab/vllm, branch integration/karmic-kraken-beta, commit
+  19f2c20ed4d64ae22bd009ceacadd85e2a81e354), with spark-ds41f's r6v vLLM series (172 patches); and the vLLM
+  nightly image docker.io/vllm/vllm-openai@sha256:3cf14c52765a0f0c2f09035e05fa79e1e4b2f9788b64afa90fa41c1ff12d29cf
+  (vllm-project/vllm af1c01499b289be555c475669ba50a88e96d846e, CUDA 13.0.2, FlashInfer 0.6.18.post1) as the
+  runtime base.
+- B12X by Luke Alonso and Local Inference Lab contributors (https://github.com/local-inference-lab/b12x,
+  Apache-2.0), commit 236ddff04a5f5064084b46464800b70b34ec7d8c, with spark-ds41f's B12X series (11 patches).
+- TileLang by Tile-AI (https://github.com/tile-ai/tilelang, MIT; its LICENSE notes additional collaboration
+  terms with Microsoft Corporation for December 1, 2024 to March 14, 2025), commit
+  b95ee4ffb52ae26e15619cad38c6f41e7e0a2b46 with its pinned submodules (Apache TVM, Apache-2.0; CUTLASS,
+  BSD-3-Clause; and their own third-party notices), with spark-ds41f's TileLang series (4 patches).
+- TileKernels by DeepSeek (https://github.com/deepseek-ai/TileKernels, MIT), commit
+  66258df6175d2f630ffecb04c5ab66bff8a2ae6a, with spark-ds41f's TileKernels patch (1 patch).
+- sparknet / dgx-spark-networking by Christopher Owen (https://github.com/christopherowen/dgx-spark-networking,
+  Apache-2.0), commit 3bc8d10104a5012244a0424d7dfc1107a72eafab; its one-shot collectives derive from B12X's
+  RoCEnante module (Luke Alonso and Local Inference Lab contributors, Apache-2.0), and its NOTICE credits
+  SparkRing (FujitsuPolycom/sparkring, Apache-2.0) for the mesh4 flow-label mechanism.
+- NCCL by NVIDIA (https://github.com/NVIDIA/nccl, Apache-2.0 with parts under their original BSD license),
+  tag v2.30.7-1 (commit 73cf112295c33aee2b895f329f592f2a9b4b0f97), rebuilt for SM121 with spark-ds41f's NCCL
+  series (4 patches), among them Stanislav Bardyuk's IB send-path acquire fence (NVIDIA/nccl#2393).
+- CUTLASS by NVIDIA (https://github.com/NVIDIA/cutlass, BSD-3-Clause), v4.7.1
+  (commit cb4247394dd82148787aed73e5dc7cef33cbf862), headers for the SM121 vLLM extension rebuild; and the
+  nvidia-cutlass-dsl 4.7.1 wheels from PyPI (NVIDIA, proprietary license), installed hash-locked.
+- DeepSeek-V4.1-Flash-1017 model weights and reference encoder (MIT, DeepSeek), downloaded by
+  `./dsv41.sh fetch`; the image contains no weights.
+
+Patch authors, from the patch headers of the series above: Christopher Owen (all B12X, TileLang and
+TileKernels patches, three of four NCCL patches, and 171 of 172 vLLM patches); carlosmolina0615 (vLLM 0045,
+the CED decoder's MoE routed with its own padding mask in TileLang); Stanislav Bardyuk (NCCL 0001,
+NVIDIA/nccl#2393). The vLLM series credits huxiaofengtiger (NVIDIA Developer Forums) for reported issues,
+and ports vllm-project/vllm#51694. Our patch (docker/0001-*.patch) is by Justin Casey.
 
 Full credits, including prior art used as inspiration only: README.md, section "Credits".
