@@ -52,8 +52,9 @@ eight at once, staggered, mixed with other prompts, and with or without a prefix
 ([Determinism](#determinism)). MemAvailable stays at 17.6-19.6 GiB per node idle and 17.6-19.5 GiB after a 1M
 prefill and needle.
 
-Pending: the sustained-load soak result, and the decision on a server-side `max_tokens` default
-([API behaviour](#api-behaviour)).
+Sustained load: a 20-minute soak (16 rounds of 16 concurrent streams × 1,024 tokens) finished with 0 failed
+requests and no NCCL, sparknet or CUDA errors on any rank; throughput held steady (217.1 → 217.4 tok/s for that
+prompt set) and MemAvailable stayed at 17.7-19.5 GiB per node.
 
 ## What you need
 
@@ -200,8 +201,10 @@ port. The key never appears in a process argv or in `print-serve`: `start` passe
 - **Sampling defaults**: requests that set no sampling parameters get DeepSeek's 1017 defaults, temperature 1.0
   and top_p 1.0, server-side (`GENERATION_DEFAULTS`, rendered as `--override-generation-config`; the checkpoint's
   `generation_config.json` is not read). Anything the request sets wins.
-- **`max_tokens`**: there is no server-side cap. A request that omits it may generate until the context is full,
-  so always send it. `prompt_tokens + max_tokens` must not exceed 1,048,576 (`MAX_MODEL_LEN`), or vLLM answers 400.
+- **`max_tokens`**: there is no server-side cap, by design. vLLM's `max_new_tokens` generation override is a hard
+  server-wide cap, not a default: it would silently truncate requests that ask for more. A request that omits
+  `max_tokens` may generate until the context is full, so always send it. `prompt_tokens + max_tokens` must not
+  exceed 1,048,576 (`MAX_MODEL_LEN`), or vLLM answers 400.
   Reasoning tokens count toward it: leave room for both. As a guide, 4-8K with thinking off, 32-64K with thinking at
   `low`/`high`, 128K or more for hard `max`-effort work.
 - **Tool calling**: `--tool-call-parser deepseek_v41 --enable-auto-tool-choice`; `tool_choice` `auto`, `none`,
@@ -345,6 +348,18 @@ because half its requests queued behind 4 sequences.
 | all | 1.662 | 1.741 |
 
 Acceptance is about level between the two engines, so the decode speedup comes from shorter steps.
+
+**Draft length** (`NUM_SPECULATIVE_TOKENS`), k=3 against the default k=5 on r6v, aggregate tok/s
+(`.work` logs in the site receipt):
+
+| prompt | c=1 k=5 → k=3 | c=4 k=5 → k=3 | c=16 k=5 → k=3 |
+|---|---:|---:|---:|
+| prose | 61.4 → 61.2 | 204.4 → 214.3 | 551.8 → 474.7 |
+| code | 87.2 → 82.5 | 229.4 → 229.5 | 574.7 → 487.9 |
+| structured | 80.6 → 77.0 | 258.1 → 254.6 | 566.0 → 473.6 |
+| json | 88.5 → 81.4 | 293.1 → 279.6 | 639.1 → 521.3 |
+
+k=5 stays: k=3 is level to 8% slower at c=1 and 14-18% slower at c=16; only prose at c=4 gains (5%).
 
 **Prefill**, unique text (no prefix-cache hits), tok/s:
 
