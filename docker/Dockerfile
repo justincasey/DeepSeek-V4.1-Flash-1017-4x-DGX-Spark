@@ -3,7 +3,7 @@
 #
 # DeepSeek-V4.1-Flash-1017 on four DGX Sparks: Christopher Owen's spark-ds41f engine, release r6w
 # (experiments/2026-10-18-r6w-swiglu: r6v plus vLLM 0181, the routed SwiGLU and MXFP8 cast over the live
-# tiles), rebuilt from scratch, plus one patch of ours on top.
+# tiles), rebuilt from scratch, plus two patches of ours on top.
 #
 #   docker build -f docker/Dockerfile -t dsv41-1017-ds41f:r6w .     (context: the repository root; only
 #                                                                    docker/ is read; linux/arm64 only)
@@ -19,9 +19,10 @@
 #
 # The build stages after `fetch` are spark-ds41f's docker/Dockerfile at that commit (Apache-2.0,
 # Copyright Christopher Owen), with his named build contexts replaced by `fetch`'s exports and his
-# build-time checks kept verbatim. Our additions: the `dsv41-vllm` stage (our reasoning-effort alias
-# patch, docker/0001-*.patch, on top of his vLLM series), and the final `dsv41` stage (the TileLang
-# SM12x block-scaled MMA check, his memguard scripts and GPU smoke script, our labels).
+# build-time checks kept verbatim. Our additions: the `dsv41-vllm` stage (our patches, docker/0001-*.patch
+# reasoning-effort aliases and docker/0002-*.patch per-rank weight snapshots, on top of his vLLM series), and
+# the final `dsv41` stage (the TileLang SM12x block-scaled MMA check, his memguard scripts and GPU smoke
+# script, checks of our patches, our labels).
 #
 # Resource use (spark-ds41f's build policy): needs ~64 GiB MemAvailable to start; VLLM_COMPILE_JOBS x
 # VLLM_NVCC_THREADS sized at 8 GiB per job. Build on an idle node.
@@ -93,10 +94,11 @@ ARG CUTLASS_UPSTREAM=https://github.com/NVIDIA/cutlass
 ARG CUTLASS_REVISION=cb4247394dd82148787aed73e5dc7cef33cbf862
 ARG CUTLASS_RELEASE_TAG=v4.7.1
 
-# Ours, applied after his vLLM series (Apache-2.0, this repository).
-ARG DSV41_VLLM_PATCH=0001-deepseek-v41-reasoning-effort-minimal-medium.patch
-ARG DSV41_VLLM_PATCH_HEAD=8c76763dafcfe6cec143767661f2c0877e0b76ff
-ARG DSV41_VLLM_TREE=2c23197db8159d0ef99faece6c8f7108e3ff8f9f
+# Ours, applied in this order after his vLLM series (Apache-2.0, this repository). docker/ must hold exactly
+# these patches.
+ARG DSV41_VLLM_PATCHES="0001-deepseek-v41-reasoning-effort-minimal-medium.patch 0002-model-loader-weight-snapshots.patch"
+ARG DSV41_VLLM_PATCH_HEAD=d1c0123ad6e37fe5fdb23c7b6570542928b0c279
+ARG DSV41_VLLM_TREE=543ca085a63bb46312f8c1d5db5a006920e9bc36
 
 # Compile parallelism: spark-ds41f sizes jobs from MemAvailable (8 GiB per job, at most 10, two NVCC
 # threads each); on a GB10's 20 cores that is 8.
@@ -282,20 +284,23 @@ RUN set -eux; \
     ds41f-prepare --smoke > /work/out/smoke.py; \
     printf '%s\n' "$SPARK_DS41F_REVISION" > /work/out/REVISION
 
-# ── dsv41-vllm: our patch on his vLLM series ───────────────────────────────────────────────────────
+# ── dsv41-vllm: our patches on his vLLM series ──────────────────────────────────────────────────────
 FROM fetch AS dsv41-vllm
 
 ARG SPARK_DS41F_LOCK
 ARG VLLM_PATCH_HEAD
-ARG DSV41_VLLM_PATCH
+ARG DSV41_VLLM_PATCHES
 ARG DSV41_VLLM_PATCH_HEAD
 ARG DSV41_VLLM_TREE
-COPY docker/${DSV41_VLLM_PATCH} /work/dsv41/
+COPY docker/*.patch /work/dsv41/
 RUN set -eux; \
+    test "$(cd /work/dsv41 && LC_ALL=C ls | tr '\n' ' ')" = "$DSV41_VLLM_PATCHES "; \
     cd /work/build/src/vllm; \
     test "$(git rev-parse HEAD)" = "$VLLM_PATCH_HEAD"; \
-    git -c user.name="Justin Casey" -c user.email="4348807+justincasey@users.noreply.github.com" \
-      -c commit.gpgsign=false am --quiet --committer-date-is-author-date "/work/dsv41/$DSV41_VLLM_PATCH"; \
+    for patch in $DSV41_VLLM_PATCHES; do \
+      git -c user.name="Justin Casey" -c user.email="4348807+justincasey@users.noreply.github.com" \
+        -c commit.gpgsign=false am --quiet --committer-date-is-author-date "/work/dsv41/$patch"; \
+    done; \
     git diff --check "$VLLM_PATCH_HEAD" HEAD; \
     test -z "$(git status --porcelain --untracked-files=all)"; \
     test "$(git rev-parse 'HEAD^{tree}')" = "$DSV41_VLLM_TREE"; \
@@ -467,8 +472,8 @@ LABEL org.opencontainers.image.source="https://github.com/christopherowen/spark-
 
 USER root
 
-# The serving vLLM is his r6w tree plus our patch (local.dsv41.vllm.* labels); the native
-# extensions are built from his tree, which our Python-only patch leaves unchanged.
+# The serving vLLM is his r6w tree plus our patches (local.dsv41.vllm.* labels); the native
+# extensions are built from his tree, which our Python-only patches leave unchanged.
 COPY --from=dsv41-vllm /work/build/context/dsv41-vllm-source/ /opt/spark3/candidate/vllm/
 COPY --from=fetch /work/build/context/b12x-source/ /opt/spark3/candidate/b12x/
 COPY --from=vllm-native-builder \
@@ -736,17 +741,17 @@ FROM runtime-tilelang-sparknet AS dsv41
 
 ARG SPARK_DS41F_UPSTREAM
 ARG SPARK_DS41F_REVISION
-ARG DSV41_VLLM_PATCH
+ARG DSV41_VLLM_PATCHES
 ARG DSV41_VLLM_PATCH_HEAD
 ARG DSV41_VLLM_TREE
 
 LABEL org.opencontainers.image.title="dsv41-1017-ds41f" \
-      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on a four-DGX-Spark RoCE ring: spark-ds41f r6w plus the dsv41-1017 reasoning-effort alias patch" \
+      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on a four-DGX-Spark RoCE ring: spark-ds41f r6w plus the dsv41-1017 patches (reasoning-effort aliases, weight snapshots)" \
       org.opencontainers.image.licenses="Apache-2.0" \
       local.dsv41.engine="spark-ds41f r6w" \
       local.dsv41.spark-ds41f.upstream="${SPARK_DS41F_UPSTREAM}" \
       local.dsv41.spark-ds41f.revision="${SPARK_DS41F_REVISION}" \
-      local.dsv41.vllm.patches="${DSV41_VLLM_PATCH}" \
+      local.dsv41.vllm.patches="${DSV41_VLLM_PATCHES}" \
       local.dsv41.vllm.patch-head="${DSV41_VLLM_PATCH_HEAD}" \
       local.dsv41.vllm.tree="${DSV41_VLLM_TREE}"
 
@@ -759,8 +764,8 @@ COPY --from=fetch /work/spark-ds41f/LICENSE /opt/spark-ds41f/LICENSE
 COPY --from=fetch /work/out/smoke.py /work/out/REVISION /opt/spark-ds41f/
 
 # The patched TileLang carries the SM120-family block-scaled MMA on SM121 (patches/tilelang 0001-0003),
-# and the serving vLLM carries our reasoning-effort aliases; neither file is importable without a GPU,
-# so both are read as files.
+# and the serving vLLM carries our reasoning-effort aliases and the weight-snapshot loader hook; none of
+# these files is importable without a GPU, so all are read as files.
 RUN python3 - <<'PY'
 import ast
 import importlib.util
@@ -782,4 +787,11 @@ efforts = ast.literal_eval(mappings)
 expected = {"minimal": 50, "low": 50, "medium": 75, "high": 75, "xhigh": 75, "max": 100}
 assert efforts == expected, efforts
 print("DeepSeek V4.1 reasoning efforts", efforts)
+
+loader = Path("/opt/spark3/candidate/vllm/vllm/model_executor/model_loader")
+assert "WeightSnapshot.for_load(self, vllm_config, model_config)" in (loader / "base_loader.py").read_text()
+snapshot = ast.parse((loader / "weight_snapshot.py").read_text())
+names = {node.name for node in snapshot.body if isinstance(node, ast.ClassDef)}
+assert {"WeightSnapshot", "SnapshotStore", "LoadProbe"} <= names, names
+print("Weight snapshot hook present (DSV41_WEIGHT_SNAPSHOT=1 enables it)")
 PY

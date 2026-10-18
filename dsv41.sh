@@ -91,6 +91,8 @@ unset _CALLER _k _v _line
 : "${CPUSET=5-9,15-19}"
 : "${CONTAINER_MEMORY=112g}"
 : "${GPU_CLOCKS:=reset}"                 # reset = `nvidia-smi -rgc` on every node at start | keep
+: "${WEIGHT_SNAPSHOT:=1}"                # 1 = per-rank loaded-weight snapshots under CACHE_DIR (docker/0002): later boots
+                                         #     read one file at NVMe speed instead of the checkpoint | 0 = always the checkpoint
 : "${STARTUP_MEMGUARD_GIB:=5}"
 : "${STARTUP_MEMGUARD_INTERVAL:=0.25}"
 : "${STARTUP_MEMGUARD_WAIT:=120}"
@@ -375,6 +377,7 @@ profile_env() {
     SPARK3_DSPARK_DEAD_ROWS_TAU=0.2 SPARK3_DSPARK_MAIN_PROJ_TP=1 SPARK3_DSPARK_PROFILE_TOKENS=random
     SPARK3_DSPARK_VOCAB_PARALLEL=1
     "SPARK3_DISPLAY_CARVEOUT_WEIGHTS=$(is_true "$DISPLAY_CARVEOUT" && echo 1 || echo 0)"
+    "DSV41_WEIGHT_SNAPSHOT=$(is_true "$WEIGHT_SNAPSHOT" && echo 1 || echo 0)"
     # vLLM
     # Drafter heads in NVFP4 (draft vocab head and Markov head): only the proposals change, every committed token
     # is still the target's; measured +1.3% c=1 decode on this ring (spark-ds41f's TP4 run: c1 level, c8 +3.5%).

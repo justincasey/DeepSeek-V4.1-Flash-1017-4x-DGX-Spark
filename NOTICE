@@ -1,7 +1,8 @@
 DeepSeek-V4.1-Flash-1017 on four DGX Sparks (vLLM)
 
-The scripts, tests, documentation and docker/0001-deepseek-v41-reasoning-effort-minimal-medium.patch in this
-repository are licensed under the Apache License 2.0 (see LICENSE).
+The scripts, tests, documentation and our patches docker/0001-deepseek-v41-reasoning-effort-minimal-medium.patch
+and docker/0002-model-loader-weight-snapshots.patch in this repository are licensed under the Apache License 2.0
+(see LICENSE).
 
 The serving engine is built by docker/Dockerfile from the third-party components below. Each is fetched at
 image build at the pinned commit or digest and patched unmodified; none is redistributed in this repository,
@@ -44,6 +45,6 @@ Patch authors, from the patch headers of the series above: Christopher Owen (all
 TileKernels patches, three of four NCCL patches, and 172 of 173 vLLM patches); carlosmolina0615 (vLLM 0045,
 the CED decoder's MoE routed with its own padding mask in TileLang); Stanislav Bardyuk (NCCL 0001,
 NVIDIA/nccl#2393). The vLLM series credits huxiaofengtiger (NVIDIA Developer Forums) for reported issues,
-and ports vllm-project/vllm#51694. Our patch (docker/0001-*.patch) is by Justin Casey.
+and ports vllm-project/vllm#51694. Our patches (docker/0001-*.patch, docker/0002-*.patch) are by Justin Casey.
 
 Full credits, including prior art used as inspiration only: README.md, section "Credits".
