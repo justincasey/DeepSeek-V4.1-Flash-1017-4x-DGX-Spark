@@ -1,0 +1,17 @@
+== prefill -> bench/runs/autoresearch-20261018-142233/prefill
+  prefill   32k     32750 tok      4.95s    6622.3 tok/s
+  prefill  128k    131057 tok     20.15s    6505.1 tok/s
+  prefill  512k    524256 tok     95.19s    5507.5 tok/s
+
+## Prefill
+
+Unique prompts (no prefix-cache hits), max_tokens 1, sequential. Tokens from usage.prompt_tokens.
+
+| target | prompt_tokens | seconds | tok/s |
+|---|---:|---:|---:|
+| 32k | 32750 | 4.95 | 6622.3 |
+| 128k | 131057 | 20.15 | 6505.1 |
+| 512k | 524256 | 95.19 | 5507.5 |
+
+_prefill: ok (2026-10-18T14:30:48-0500)_
+

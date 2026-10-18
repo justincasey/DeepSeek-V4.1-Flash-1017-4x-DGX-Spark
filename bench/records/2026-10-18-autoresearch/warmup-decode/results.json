@@ -1,0 +1,241 @@
+{
+ "step": "decode",
+ "ok": true,
+ "started": "2026-10-18T14:24:46-0500",
+ "finished": "2026-10-18T14:26:18-0500",
+ "base_url": "http://192.168.1.121:8000",
+ "model": "deepseek-v4.1-flash",
+ "args": {
+  "base_url": "http://192.168.1.121:8000",
+  "model": "deepseek-v4.1-flash",
+  "timeout": 7200.0,
+  "step": "decode",
+  "out": "bench/runs/autoresearch-20261018-142233/warmup-decode",
+  "seconds": 20.0,
+  "max_tokens": 512,
+  "types": "prose,code,structured,json",
+  "conc": "1",
+  "ignore_eos": false
+ },
+ "results": {
+  "settings": {
+   "concurrency": [
+    1
+   ],
+   "prompt_types": [
+    "prose",
+    "code",
+    "structured",
+    "json"
+   ],
+   "seconds": 20.0,
+   "max_tokens": 512,
+   "ignore_eos": false,
+   "thinking": false,
+   "temperature": 0,
+   "prompts": {
+    "prose": "Write a long, detailed essay on how the invention of the printing press changed European science, religion and politics over the following three centuries.",
+    "code": "Write a complete, well-commented Python module implementing a thread-safe LRU cache with TTL expiry, a decorator interface, statistics counters and an extensive unittest suite.",
+    "structured": "Produce a detailed Markdown reference guide to TCP congestion control with headings, numbered steps, bullet lists and a comparison table of Reno, CUBIC, BBR and Vegas.",
+    "json": "Output a JSON array of 40 fictional library books, each an object with title, author, year, isbn, genres (array), page_count, rating and a two-sentence summary. Output only JSON."
+   }
+  },
+  "cells": [
+   {
+    "requests": 3,
+    "errors": 0,
+    "error_samples": [],
+    "elapsed_s": 23.698306792,
+    "completion_tokens": 1536,
+    "agg_tok_s": 64.8147571673145,
+    "per_stream_tok_s": 65.81610372612074,
+    "ttft_s": 0.12860095799999982,
+    "mean_completion_tokens": 512.0,
+    "records": [
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 31,
+      "ttft_s": 0.130296667,
+      "last_token_s": 7.9206825830000005,
+      "latency_s": 7.920775833,
+      "finish_reason": "length",
+      "decode_tok_s": 65.59366962174508
+     },
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 31,
+      "ttft_s": 0.12042208399999943,
+      "last_token_s": 7.884479375,
+      "latency_s": 7.884598500000001,
+      "finish_reason": "length",
+      "decode_tok_s": 65.81610372612074
+     },
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 31,
+      "ttft_s": 0.12860095799999982,
+      "last_token_s": 7.891285290999999,
+      "latency_s": 7.891360165999998,
+      "finish_reason": "length",
+      "decode_tok_s": 65.82774438317483
+     }
+    ],
+    "prompt_type": "prose",
+    "concurrency": 1
+   },
+   {
+    "requests": 4,
+    "errors": 0,
+    "error_samples": [],
+    "elapsed_s": 21.68386275,
+    "completion_tokens": 2048,
+    "agg_tok_s": 94.44811672219241,
+    "per_stream_tok_s": 96.63006114630261,
+    "ttft_s": 0.12682777099999853,
+    "mean_completion_tokens": 512.0,
+    "records": [
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 38,
+      "ttft_s": 0.1329320420000002,
+      "last_token_s": 5.434893250000002,
+      "latency_s": 5.4350485420000005,
+      "finish_reason": "length",
+      "decode_tok_s": 96.37943016802242
+     },
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 38,
+      "ttft_s": 0.11893691700000275,
+      "last_token_s": 5.444047958000002,
+      "latency_s": 5.444101417000002,
+      "finish_reason": "length",
+      "decode_tok_s": 95.96044027356838
+     },
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 38,
+      "ttft_s": 0.12072349999999687,
+      "last_token_s": 5.395252292000002,
+      "latency_s": 5.395342333999999,
+      "finish_reason": "length",
+      "decode_tok_s": 96.88069212458278
+     },
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 38,
+      "ttft_s": 0.14660291699999561,
+      "last_token_s": 5.409083249999995,
+      "latency_s": 5.409151334000001,
+      "finish_reason": "length",
+      "decode_tok_s": 97.1025006584096
+     }
+    ],
+    "prompt_type": "code",
+    "concurrency": 1
+   },
+   {
+    "requests": 4,
+    "errors": 0,
+    "error_samples": [],
+    "elapsed_s": 24.226050625000006,
+    "completion_tokens": 2048,
+    "agg_tok_s": 84.53709734621673,
+    "per_stream_tok_s": 86.34230581661033,
+    "ttft_s": 0.14357610400000098,
+    "mean_completion_tokens": 512.0,
+    "records": [
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 40,
+      "ttft_s": 0.11938441699999913,
+      "last_token_s": 6.029971374999995,
+      "latency_s": 6.030035957999999,
+      "finish_reason": "length",
+      "decode_tok_s": 86.45503460673395
+     },
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 40,
+      "ttft_s": 0.14484241599999592,
+      "last_token_s": 6.063447165999996,
+      "latency_s": 6.063501791,
+      "finish_reason": "length",
+      "decode_tok_s": 86.33791604347292
+     },
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 40,
+      "ttft_s": 0.1431865830000021,
+      "last_token_s": 6.0702413329999985,
+      "latency_s": 6.070309999999999,
+      "finish_reason": "length",
+      "decode_tok_s": 86.21482701842771
+     },
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 40,
+      "ttft_s": 0.14396562499999987,
+      "last_token_s": 6.061968584000006,
+      "latency_s": 6.062031417000007,
+      "finish_reason": "length",
+      "decode_tok_s": 86.34669558974775
+     }
+    ],
+    "prompt_type": "structured",
+    "concurrency": 1
+   },
+   {
+    "requests": 4,
+    "errors": 0,
+    "error_samples": [],
+    "elapsed_s": 21.822728209000005,
+    "completion_tokens": 2048,
+    "agg_tok_s": 93.84711115796125,
+    "per_stream_tok_s": 96.30217283989336,
+    "ttft_s": 0.1429922915000077,
+    "mean_completion_tokens": 512.0,
+    "records": [
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 47,
+      "ttft_s": 0.1506379169999974,
+      "last_token_s": 5.441139333999999,
+      "latency_s": 5.441212667000002,
+      "finish_reason": "length",
+      "decode_tok_s": 96.58819830536298
+     },
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 47,
+      "ttft_s": 0.1430415830000129,
+      "last_token_s": 5.444950458000008,
+      "latency_s": 5.445002708000004,
+      "finish_reason": "length",
+      "decode_tok_s": 96.38038149043074
+     },
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 47,
+      "ttft_s": 0.14294300000000248,
+      "last_token_s": 5.453470416999991,
+      "latency_s": 5.453530791999995,
+      "finish_reason": "length",
+      "decode_tok_s": 96.22396418935597
+     },
+     {
+      "completion_tokens": 512,
+      "prompt_tokens": 47,
+      "ttft_s": 0.1426429169999892,
+      "last_token_s": 5.482697166999998,
+      "latency_s": 5.482769749999989,
+      "finish_reason": "length",
+      "decode_tok_s": 95.69191174415488
+     }
+    ],
+    "prompt_type": "json",
+    "concurrency": 1
+   }
+  ]
+ }
+}

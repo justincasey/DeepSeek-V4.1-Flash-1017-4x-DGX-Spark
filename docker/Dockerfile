@@ -1,15 +1,19 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 # SPDX-License-Identifier: Apache-2.0
 #
-# DeepSeek-V4.1-Flash-1017 on four DGX Sparks: Christopher Owen's spark-ds41f engine, release r6v
-# (experiments/2026-10-17-r6v), rebuilt from scratch, plus one patch of ours on top.
+# DeepSeek-V4.1-Flash-1017 on four DGX Sparks: Christopher Owen's spark-ds41f engine, release r6w
+# (experiments/2026-10-18-r6w-swiglu: r6v plus vLLM 0181, the routed SwiGLU and MXFP8 cast over the live
+# tiles), rebuilt from scratch, plus two patches of ours, his scale-codes overlay, four more of ours on
+# top (two upstream vLLM fixes ported, two exact prefill savings), his DSpark profile-replays overlay, his
+# DSpark draft budget by a fixed linear step cost (r6x's vLLM 0184, rebased here as docker/0007-*.patch), and
+# our persistent prefix KV cache (docker/0008-*.patch).
 #
-#   docker build -f docker/Dockerfile -t dsv41-1017-ds41f:r6v .     (context: the repository root; only
+#   docker build -f docker/Dockerfile -t dsv41-1017-ds41f:r6w .     (context: the repository root; only
 #                                                                    docker/ is read; linux/arm64 only)
 #
 # Every input is pinned below, by commit or digest. The `fetch` stage clones spark-ds41f at
 # SPARK_DS41F_REVISION and runs ITS OWN `bin/spark build prepare` code (build_inputs, prepare_project,
-# prepare_cutlass, prepare_wheels, export_source, vllm_deletions, build_problems) against the r6v lock:
+# prepare_cutlass, prepare_wheels, export_source, vllm_deletions, build_problems) against the r6w lock:
 # each upstream is fetched at its pinned commit, its patch series is applied unmodified with `git am`
 # (fixed committer, so the patch heads reproduce the source manifest's commits byte for byte), and the
 # patch-set fingerprint, patch head, tree and TileLang's submodule commits must equal the manifest's.
@@ -18,9 +22,14 @@
 #
 # The build stages after `fetch` are spark-ds41f's docker/Dockerfile at that commit (Apache-2.0,
 # Copyright Christopher Owen), with his named build contexts replaced by `fetch`'s exports and his
-# build-time checks kept verbatim. Our additions: the `dsv41-vllm` stage (our reasoning-effort alias
-# patch, docker/0001-*.patch, on top of his vLLM series), and the final `dsv41` stage (the TileLang
-# SM12x block-scaled MMA check, his memguard scripts and GPU smoke script, our labels).
+# build-time checks kept verbatim. Our additions: the `dsv41-vllm` stage (our patches, docker/0001-*.patch
+# reasoning-effort aliases and docker/0002-*.patch per-rank weight snapshots, on top of his vLLM series, then
+# his scale-codes overlay as one commit, then docker/0003-*.patch to docker/0006-*.patch: our ports of two
+# upstream vLLM fixes and two exact prefill savings of ours, then his DSpark profile-replays overlay as one
+# commit, then docker/0007-*.patch: his DSpark linear draft budget rebased onto that tree, then
+# docker/0008-*.patch: our persistent prefix KV cache), and the final `dsv41` stage (the TileLang SM12x
+# block-scaled MMA check, his memguard scripts and GPU smoke script, checks of our patches, the overlays and
+# the linear budget, our labels).
 #
 # Resource use (spark-ds41f's build policy): needs ~64 GiB MemAvailable to start; VLLM_COMPILE_JOBS x
 # VLLM_NVCC_THREADS sized at 8 GiB per job. Build on an idle node.
@@ -32,17 +41,17 @@ ARG BASE_IMAGE_DIGEST=sha256:3cf14c52765a0f0c2f09035e05fa79e1e4b2f9788b64afa90fa
 ARG VLLM_BASE_SOURCE_REVISION=af1c01499b289be555c475669ba50a88e96d846e
 
 ARG SPARK_DS41F_UPSTREAM=https://github.com/christopherowen/spark-ds41f
-ARG SPARK_DS41F_REVISION=cbf47749e22e25f4feb3ba9f455e8a89596eacbe
-ARG SPARK_DS41F_LOCK=experiments/2026-10-17-r6v/upstreams.lock.json
-ARG SPARK_DS41F_PROFILE=experiments/2026-10-17-r6v/r6v-tp4-1017.json
+ARG SPARK_DS41F_REVISION=2dc95329610188451a5c5f5af98e5c392144809c
+ARG SPARK_DS41F_LOCK=experiments/2026-10-18-r6w-swiglu/upstreams.lock.json
+ARG SPARK_DS41F_PROFILE=experiments/2026-10-18-r6w-swiglu/r6w-tp4-1017.json
 
 ARG VLLM_UPSTREAM=https://github.com/local-inference-lab/vllm
 ARG VLLM_REF=integration/karmic-kraken-beta
 ARG VLLM_REVISION=19f2c20ed4d64ae22bd009ceacadd85e2a81e354
-ARG VLLM_SERIES=experiments/2026-10-17-r6v/vllm/series
-ARG VLLM_PATCHSET_SHA256=00b1018e0078de4fc986554d9eccc8ed1e7f404e54268ba4e71054e03396c0c4
-ARG VLLM_PATCH_HEAD=c001cc4ed77bef686ddd006be0dd706b9c15d7b7
-ARG VLLM_TREE=d11e9836e61bc2b763d6805d3324ec8fb5376360
+ARG VLLM_SERIES=experiments/2026-10-18-r6w-swiglu/vllm/series
+ARG VLLM_PATCHSET_SHA256=1879bb379390dcbd0f75a198dd92453afeaaf64f5d97018a5e79b936d20902e3
+ARG VLLM_PATCH_HEAD=600fc0ebfa240c804d5f5e3e0116ce6b9207839c
+ARG VLLM_TREE=8564da0b9a0f19d70ff75decb15ff89101886279
 ARG VLLM_CANONICAL_UPSTREAM=https://github.com/vllm-project/vllm
 
 ARG B12X_UPSTREAM=https://github.com/local-inference-lab/b12x
@@ -92,13 +101,72 @@ ARG CUTLASS_UPSTREAM=https://github.com/NVIDIA/cutlass
 ARG CUTLASS_REVISION=cb4247394dd82148787aed73e5dc7cef33cbf862
 ARG CUTLASS_RELEASE_TAG=v4.7.1
 
-# Ours, applied after his vLLM series (Apache-2.0, this repository).
-ARG DSV41_VLLM_PATCH=0001-deepseek-v41-reasoning-effort-minimal-medium.patch
-ARG DSV41_VLLM_PATCH_HEAD=dc6bfcd7e00f50057bd1274ca37100752465d7d7
-ARG DSV41_VLLM_TREE=18d715667f1b91ed8c176a8402bdcc0e1e11c8a0
+# Ours, applied in this order after his vLLM series (Apache-2.0, this repository). docker/ must hold exactly
+# these patches, DSV41_VLLM_POST_OVERLAY_PATCHES, LINEAR_BUDGET_PATCH and KV_PERSIST_PATCH below.
+ARG DSV41_VLLM_PATCHES="0001-deepseek-v41-reasoning-effort-minimal-medium.patch 0002-model-loader-weight-snapshots.patch"
+
+# Then Christopher Owen's lossless MoE scale-codes overlay (spark-ds41f experiments/2026-10-18-scale-codes,
+# Apache-2.0): the routed experts' UE8M0 scales kept as a base exponent per row and 4-bit codes, which the
+# grouped GEMMs expand into the same scale words (outputs bit-identical to r6w's). Three whole files over
+# r6w's (r6v with 0181), at the newest commit touching overlay/, each pinned by sha256, committed with a
+# fixed author, committer and date; SCALE_CODES_PATCH_HEAD/TREE are the head and tree after that commit.
+ARG SCALE_CODES_REVISION=a250ace70424475c04b0919fc9a46f23c19e51da
+ARG SCALE_CODES_OVERLAY=experiments/2026-10-18-scale-codes/overlay
+ARG SCALE_CODES_FUSED_MOE_TILELANG_SHA256=fdb6f54d02859e7d7e1aee5fb9f73c5f0a2a9ac26ded4044911b8f10e5b25ddb
+ARG SCALE_CODES_TILELANG_GEMM_SHA256=1b6b2c878fb79293d3cce291a27002d6d966718218d69a7461bf99a38a38556c
+ARG SCALE_CODES_TILELANG_MOE_SHA256=b446d2fe12bc6c6785f8593148c21fb7036369e749488437f90f335b1f78bf6d
+ARG SCALE_CODES_PATCH_HEAD=2847b6a14d611fbffdb43b9456288b77dcdbad5e
+ARG SCALE_CODES_TREE=3302edb15da7502a82ac70f03dd9cd83b3f3e211
+
+# Then ours again (Apache-2.0, this repository), applied in this order after the overlay commit:
+# 0003 ports vllm-project/vllm#60945 (Chauncey), no lookahead past the last logit in block verification's
+# residual mass; 0004 ports vllm-project/vllm#61161 (DimensionSTP), fresh acceptance draws per draft step
+# under block verification; 0005 keeps one CED decoder row for a non-final prefill chunk no later window
+# reads (DSV41_CED_SKIP_NONFINAL=0 turns it off); 0006 drops the pre-collapse MTP buffer DSpark never reads.
+ARG DSV41_VLLM_POST_OVERLAY_PATCHES="0003-spec-decode-block-residual-mass-lookahead-bound.patch 0004-spec-decode-block-verification-step-seeds.patch 0005-deepseek-v41-ced-skip-unread-nonfinal-chunks.patch 0006-deepseek-v41-dspark-no-mtp-hidden-buffer.patch"
+
+# Then Christopher Owen's DSpark profile-replays overlay (spark-ds41f
+# experiments/2026-10-18-dspark-profile-replays, Apache-2.0; his vLLM branch dspark-profile-replays 6bc1fc400,
+# not published): adaptive verification times each graph-captured shape in 25 sweeps instead of 5 (the eager
+# tail keeps 5), cutting the 16-96-row cost slopes' build-to-build noise 4-5x, and its pin key names the
+# replay counts, so 5-replay curves are never reused. One whole file over r6w's (untouched by 0001-0006), at
+# the commit adding overlay/, pinned by sha256, committed with a fixed author, committer and date;
+# PROFILE_REPLAYS_PATCH_HEAD/TREE are the head and tree after that commit.
+ARG PROFILE_REPLAYS_REVISION=2ce3644fa361290b0024f0ee784b17b63c8b2882
+ARG PROFILE_REPLAYS_OVERLAY=experiments/2026-10-18-dspark-profile-replays/overlay
+ARG PROFILE_REPLAYS_ADAPTIVE_VERIFICATION_SHA256=f9f3876ff36cda8d8f4bcc1dcfcd10715bc8bb3b2a5d691565e05614f316e07c
+ARG PROFILE_REPLAYS_PATCH_HEAD=a71931204cc1b49d7596ff12c570fc4ab2f86435
+ARG PROFILE_REPLAYS_TREE=68c0d5fbba65c850490bfc1e125b95a774740de7
+
+# Then Christopher Owen's DSpark draft budget by a fixed linear step cost (spark-ds41f
+# experiments/2026-10-18-dspark-linear-budget, its overlay at LINEAR_BUDGET_OVERLAY_REVISION; promoted in r6x as
+# vLLM 0184, experiments/2026-10-18-r6x/vllm at LINEAR_BUDGET_REVISION; Apache-2.0): each step's draft budget
+# maximises expected tokens over 1 + row_cost * rows, row_cost the speculative config's
+# adaptive_verification_row_cost (default 0.02; his screen also ran 0.035), in place of the boot-timed cost
+# curves. It deletes the boot profile (so the profile-replays code above), the pinned curves
+# (SPARK3_DSPARK_COST_DIR) and adaptive_verification_cost_scale. His overlay's whole model_runner.py would
+# drop 0006's None guard, so 0184 is applied as a patch rebased onto the tree above (his authorship and date;
+# the one conflict is the deleted 25-replay profile): adaptive_verification.py and speculative.py come out
+# byte for byte his overlay's (sha256 pins below), model_runner.py is his plus 0006's guard.
+# LINEAR_BUDGET_PATCH_HEAD/TREE are the head and tree after it.
+ARG LINEAR_BUDGET_REVISION=03e8775c9f2c9a791bb49a2f4d97575020ec0f7b
+ARG LINEAR_BUDGET_OVERLAY_REVISION=53ef3558f4ca56f244cfb1566061199ad9a8975f
+ARG LINEAR_BUDGET_PATCH=0007-dspark-adaptive-verification-linear-row-cost-budget.patch
+ARG LINEAR_BUDGET_ADAPTIVE_VERIFICATION_SHA256=cffcb7cd663d15f206688a17559e0424c24f145474ce0703635b2ae1d5f525c3
+ARG LINEAR_BUDGET_SPECULATIVE_SHA256=62f0a2409d5c1a64ec1d364033cc2df0268e1aadccf390ac60a5be91ea1b88bd
+ARG LINEAR_BUDGET_PATCH_HEAD=ef9987d130261b4e35126e9364b6befe77752a82
+ARG LINEAR_BUDGET_TREE=0e9522300cd782c328ce4c7e053f55c99008a4c7
+
+# Then ours (Apache-2.0, this repository): the prefix KV cache persists across restarts. With
+# DSV41_KV_PERSIST=1 (default 0) `POST /v1/dsv41/kv_snapshot` saves every rank's KV backing buffer and the
+# scheduler's prefix-cache table under /cache/dsv41/kv-snapshots, and the next start restores them after
+# warmup, on every rank or none. DSV41_VLLM_PATCH_HEAD/TREE are the serving vLLM's head and tree after it.
+ARG KV_PERSIST_PATCH=0008-v1-engine-persistent-prefix-kv-cache.patch
+ARG DSV41_VLLM_PATCH_HEAD=97a1e5068fada891c2016ce7e0e3193e872a909e
+ARG DSV41_VLLM_TREE=675d178dfd069b22dcfbdb44e3e8da73854e1a43
 
 # Compile parallelism: spark-ds41f sizes jobs from MemAvailable (8 GiB per job, at most 10, two NVCC
-# threads each); on a GB10's 20 cores that is 8, the value its r6v build used.
+# threads each); on a GB10's 20 cores that is 8.
 ARG VLLM_COMPILE_JOBS=8
 ARG VLLM_NVCC_THREADS=2
 ARG TILELANG_COMPILE_JOBS=8
@@ -281,20 +349,104 @@ RUN set -eux; \
     ds41f-prepare --smoke > /work/out/smoke.py; \
     printf '%s\n' "$SPARK_DS41F_REVISION" > /work/out/REVISION
 
-# ── dsv41-vllm: our patch on his vLLM series ───────────────────────────────────────────────────────
+# ── dsv41-vllm: our patches, the scale-codes and profile-replays overlays, 0007 and 0008 on his vLLM series
 FROM fetch AS dsv41-vllm
+
+ARG SPARK_DS41F_UPSTREAM
+ARG SCALE_CODES_REVISION
+RUN set -eux; \
+    git init --quiet /work/scale-codes; \
+    cd /work/scale-codes; \
+    git remote add origin "$SPARK_DS41F_UPSTREAM"; \
+    git fetch --quiet --depth 1 --no-tags origin "$SCALE_CODES_REVISION"; \
+    git checkout --quiet --detach FETCH_HEAD; \
+    test "$(git rev-parse HEAD)" = "$SCALE_CODES_REVISION"; \
+    test -z "$(git status --porcelain --untracked-files=all)"
+
+ARG PROFILE_REPLAYS_REVISION
+RUN set -eux; \
+    git init --quiet /work/profile-replays; \
+    cd /work/profile-replays; \
+    git remote add origin "$SPARK_DS41F_UPSTREAM"; \
+    git fetch --quiet --depth 1 --no-tags origin "$PROFILE_REPLAYS_REVISION"; \
+    git checkout --quiet --detach FETCH_HEAD; \
+    test "$(git rev-parse HEAD)" = "$PROFILE_REPLAYS_REVISION"; \
+    test -z "$(git status --porcelain --untracked-files=all)"
 
 ARG SPARK_DS41F_LOCK
 ARG VLLM_PATCH_HEAD
-ARG DSV41_VLLM_PATCH
+ARG DSV41_VLLM_PATCHES
+ARG DSV41_VLLM_POST_OVERLAY_PATCHES
+ARG SCALE_CODES_OVERLAY
+ARG SCALE_CODES_FUSED_MOE_TILELANG_SHA256
+ARG SCALE_CODES_TILELANG_GEMM_SHA256
+ARG SCALE_CODES_TILELANG_MOE_SHA256
+ARG SCALE_CODES_PATCH_HEAD
+ARG SCALE_CODES_TREE
+ARG PROFILE_REPLAYS_OVERLAY
+ARG PROFILE_REPLAYS_ADAPTIVE_VERIFICATION_SHA256
+ARG PROFILE_REPLAYS_PATCH_HEAD
+ARG PROFILE_REPLAYS_TREE
+ARG LINEAR_BUDGET_PATCH
+ARG LINEAR_BUDGET_PATCH_HEAD
+ARG LINEAR_BUDGET_TREE
+ARG KV_PERSIST_PATCH
 ARG DSV41_VLLM_PATCH_HEAD
 ARG DSV41_VLLM_TREE
-COPY docker/${DSV41_VLLM_PATCH} /work/dsv41/
+COPY docker/*.patch /work/dsv41/
 RUN set -eux; \
+    test "$(cd /work/dsv41 && LC_ALL=C ls | tr '\n' ' ')" = "$DSV41_VLLM_PATCHES $DSV41_VLLM_POST_OVERLAY_PATCHES $LINEAR_BUDGET_PATCH $KV_PERSIST_PATCH "; \
     cd /work/build/src/vllm; \
     test "$(git rev-parse HEAD)" = "$VLLM_PATCH_HEAD"; \
+    for patch in $DSV41_VLLM_PATCHES; do \
+      git -c user.name="Justin Casey" -c user.email="4348807+justincasey@users.noreply.github.com" \
+        -c commit.gpgsign=false am --quiet --committer-date-is-author-date "/work/dsv41/$patch"; \
+    done; \
+    overlay="vllm/model_executor/layers/fused_moe/tilelang.py $SCALE_CODES_FUSED_MOE_TILELANG_SHA256 \
+      vllm/models/deepseek_v4_1/tilelang/gemm.py $SCALE_CODES_TILELANG_GEMM_SHA256 \
+      vllm/models/deepseek_v4_1/tilelang/moe.py $SCALE_CODES_TILELANG_MOE_SHA256"; \
+    set -- $overlay; \
+    while [ "$#" -gt 0 ]; do \
+      test -z "$(git diff --name-only "$VLLM_PATCH_HEAD" HEAD -- "$1")"; \
+      echo "$2  /work/scale-codes/$SCALE_CODES_OVERLAY/$1" | sha256sum --check --strict; \
+      cp "/work/scale-codes/$SCALE_CODES_OVERLAY/$1" "$1"; \
+      git add -- "$1"; \
+      shift 2; \
+    done; \
+    GIT_AUTHOR_NAME="Christopher Owen" GIT_AUTHOR_EMAIL="christopherowen@users.noreply.github.com" \
+    GIT_AUTHOR_DATE="2026-10-18T09:26:40+02:00" GIT_COMMITTER_NAME="Justin Casey" \
+    GIT_COMMITTER_EMAIL="4348807+justincasey@users.noreply.github.com" \
+    GIT_COMMITTER_DATE="2026-10-18T09:26:40+02:00" \
+      git -c commit.gpgsign=false commit --quiet \
+        -m "DeepSeek V4.1 MoE: the routed experts' scales as row bases and 4-bit codes" \
+        -m "Christopher Owen's scale-codes overlay, copied unmodified from spark-ds41f $SCALE_CODES_REVISION ($SCALE_CODES_OVERLAY): the three files over r6w's (r6v with 0181). The grouped GEMMs expand the codes into the same scale words, so every output bit is r6w's, from half the scale bytes."; \
+    test "$(git rev-parse 'HEAD^{tree}')" = "$SCALE_CODES_TREE"; \
+    test "$(git rev-parse HEAD)" = "$SCALE_CODES_PATCH_HEAD"; \
+    for patch in $DSV41_VLLM_POST_OVERLAY_PATCHES; do \
+      git -c user.name="Justin Casey" -c user.email="4348807+justincasey@users.noreply.github.com" \
+        -c commit.gpgsign=false am --quiet --committer-date-is-author-date "/work/dsv41/$patch"; \
+    done; \
+    replays=vllm/v1/worker/gpu/spec_decode/adaptive_verification.py; \
+    test -z "$(git diff --name-only "$VLLM_PATCH_HEAD" HEAD -- "$replays")"; \
+    echo "$PROFILE_REPLAYS_ADAPTIVE_VERIFICATION_SHA256  /work/profile-replays/$PROFILE_REPLAYS_OVERLAY/$replays" \
+      | sha256sum --check --strict; \
+    cp "/work/profile-replays/$PROFILE_REPLAYS_OVERLAY/$replays" "$replays"; \
+    git add -- "$replays"; \
+    GIT_AUTHOR_NAME="Christopher Owen" GIT_AUTHOR_EMAIL="christopherowen@users.noreply.github.com" \
+    GIT_AUTHOR_DATE="2026-10-18T10:07:44+02:00" GIT_COMMITTER_NAME="Justin Casey" \
+    GIT_COMMITTER_EMAIL="4348807+justincasey@users.noreply.github.com" \
+    GIT_COMMITTER_DATE="2026-10-18T10:07:44+02:00" \
+      git -c commit.gpgsign=false commit --quiet \
+        -m "DSpark cost profile: 25 replays of each decode shape (5 of the eager tail)" \
+        -m "Christopher Owen's profile-replays overlay, copied unmodified from spark-ds41f $PROFILE_REPLAYS_REVISION ($PROFILE_REPLAYS_OVERLAY): adaptive_verification.py over r6w's (r6v's). Each graph-captured shape is timed in 25 sweeps instead of 5, the eager tail keeps 5, and the pin key names the replay counts, so curves timed with fewer replays are not reused."; \
+    test "$(git rev-parse 'HEAD^{tree}')" = "$PROFILE_REPLAYS_TREE"; \
+    test "$(git rev-parse HEAD)" = "$PROFILE_REPLAYS_PATCH_HEAD"; \
     git -c user.name="Justin Casey" -c user.email="4348807+justincasey@users.noreply.github.com" \
-      -c commit.gpgsign=false am --quiet --committer-date-is-author-date "/work/dsv41/$DSV41_VLLM_PATCH"; \
+      -c commit.gpgsign=false am --quiet --committer-date-is-author-date "/work/dsv41/$LINEAR_BUDGET_PATCH"; \
+    test "$(git rev-parse 'HEAD^{tree}')" = "$LINEAR_BUDGET_TREE"; \
+    test "$(git rev-parse HEAD)" = "$LINEAR_BUDGET_PATCH_HEAD"; \
+    git -c user.name="Justin Casey" -c user.email="4348807+justincasey@users.noreply.github.com" \
+      -c commit.gpgsign=false am --quiet --committer-date-is-author-date "/work/dsv41/$KV_PERSIST_PATCH"; \
     git diff --check "$VLLM_PATCH_HEAD" HEAD; \
     test -z "$(git status --porcelain --untracked-files=all)"; \
     test "$(git rev-parse 'HEAD^{tree}')" = "$DSV41_VLLM_TREE"; \
@@ -466,8 +618,9 @@ LABEL org.opencontainers.image.source="https://github.com/christopherowen/spark-
 
 USER root
 
-# The serving vLLM is his r6v tree plus our patch (local.dsv41.vllm.* labels); the native
-# extensions are built from his tree, which our Python-only patch leaves unchanged.
+# The serving vLLM is his r6w tree plus our patches, the scale-codes and profile-replays overlays, 0007 (his
+# DSpark linear draft budget) and 0008 (our persistent prefix KV cache) (local.dsv41.vllm.* labels); the native
+# extensions are built from his tree, which these Python-only changes leave unchanged.
 COPY --from=dsv41-vllm /work/build/context/dsv41-vllm-source/ /opt/spark3/candidate/vllm/
 COPY --from=fetch /work/build/context/b12x-source/ /opt/spark3/candidate/b12x/
 COPY --from=vllm-native-builder \
@@ -735,17 +888,40 @@ FROM runtime-tilelang-sparknet AS dsv41
 
 ARG SPARK_DS41F_UPSTREAM
 ARG SPARK_DS41F_REVISION
-ARG DSV41_VLLM_PATCH
+ARG DSV41_VLLM_PATCHES
+ARG DSV41_VLLM_POST_OVERLAY_PATCHES
 ARG DSV41_VLLM_PATCH_HEAD
 ARG DSV41_VLLM_TREE
+ARG SCALE_CODES_REVISION
+ARG SCALE_CODES_OVERLAY
+ARG SCALE_CODES_FUSED_MOE_TILELANG_SHA256
+ARG SCALE_CODES_TILELANG_GEMM_SHA256
+ARG SCALE_CODES_TILELANG_MOE_SHA256
+ARG PROFILE_REPLAYS_REVISION
+ARG PROFILE_REPLAYS_OVERLAY
+ARG LINEAR_BUDGET_REVISION
+ARG LINEAR_BUDGET_OVERLAY_REVISION
+ARG LINEAR_BUDGET_PATCH
+ARG LINEAR_BUDGET_ADAPTIVE_VERIFICATION_SHA256
+ARG LINEAR_BUDGET_SPECULATIVE_SHA256
+ARG KV_PERSIST_PATCH
 
 LABEL org.opencontainers.image.title="dsv41-1017-ds41f" \
-      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on a four-DGX-Spark RoCE ring: spark-ds41f r6v plus the dsv41-1017 reasoning-effort alias patch" \
+      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on a four-DGX-Spark RoCE ring: spark-ds41f r6w plus the dsv41-1017 patches (reasoning-effort aliases, weight snapshots, vLLM #60945 and #61161 block verification fixes, CED decoder skip of unread prefill chunks, no DSpark MTP buffer, persistent prefix KV cache), spark-ds41f's MoE scale-codes overlay and its DSpark draft budget by a fixed linear step cost (r6x's vLLM 0184)" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      local.dsv41.engine="spark-ds41f r6v" \
+      local.dsv41.engine="spark-ds41f r6w" \
       local.dsv41.spark-ds41f.upstream="${SPARK_DS41F_UPSTREAM}" \
       local.dsv41.spark-ds41f.revision="${SPARK_DS41F_REVISION}" \
-      local.dsv41.vllm.patches="${DSV41_VLLM_PATCH}" \
+      local.dsv41.vllm.patches="${DSV41_VLLM_PATCHES}" \
+      local.dsv41.vllm.post-overlay-patches="${DSV41_VLLM_POST_OVERLAY_PATCHES}" \
+      local.dsv41.vllm.scale-codes.revision="${SCALE_CODES_REVISION}" \
+      local.dsv41.vllm.scale-codes.overlay="${SCALE_CODES_OVERLAY}" \
+      local.dsv41.vllm.profile-replays.revision="${PROFILE_REPLAYS_REVISION}" \
+      local.dsv41.vllm.profile-replays.overlay="${PROFILE_REPLAYS_OVERLAY}" \
+      local.dsv41.vllm.linear-budget.revision="${LINEAR_BUDGET_REVISION}" \
+      local.dsv41.vllm.linear-budget.overlay-revision="${LINEAR_BUDGET_OVERLAY_REVISION}" \
+      local.dsv41.vllm.linear-budget.patch="${LINEAR_BUDGET_PATCH}" \
+      local.dsv41.vllm.kv-persist.patch="${KV_PERSIST_PATCH}" \
       local.dsv41.vllm.patch-head="${DSV41_VLLM_PATCH_HEAD}" \
       local.dsv41.vllm.tree="${DSV41_VLLM_TREE}"
 
@@ -758,11 +934,21 @@ COPY --from=fetch /work/spark-ds41f/LICENSE /opt/spark-ds41f/LICENSE
 COPY --from=fetch /work/out/smoke.py /work/out/REVISION /opt/spark-ds41f/
 
 # The patched TileLang carries the SM120-family block-scaled MMA on SM121 (patches/tilelang 0001-0003),
-# and the serving vLLM carries our reasoning-effort aliases; neither file is importable without a GPU,
-# so both are read as files.
-RUN python3 - <<'PY'
+# and the serving vLLM carries our reasoning-effort aliases, the weight-snapshot loader hook, the
+# scale-codes overlay's three files byte for byte, our patches 0003-0006, and the linear-budget overlay's
+# adaptive_verification.py and speculative.py byte for byte (0007, which replaced the profile-replays file) with
+# its model runner change beside 0006's guard, and our KV snapshot hooks (0008); none of these files is
+# importable without a GPU, so all are read as files.
+RUN SCALE_CODES_FUSED_MOE_TILELANG_SHA256=${SCALE_CODES_FUSED_MOE_TILELANG_SHA256} \
+    SCALE_CODES_TILELANG_GEMM_SHA256=${SCALE_CODES_TILELANG_GEMM_SHA256} \
+    SCALE_CODES_TILELANG_MOE_SHA256=${SCALE_CODES_TILELANG_MOE_SHA256} \
+    LINEAR_BUDGET_ADAPTIVE_VERIFICATION_SHA256=${LINEAR_BUDGET_ADAPTIVE_VERIFICATION_SHA256} \
+    LINEAR_BUDGET_SPECULATIVE_SHA256=${LINEAR_BUDGET_SPECULATIVE_SHA256} \
+    python3 - <<'PY'
 import ast
+import hashlib
 import importlib.util
+import os
 from pathlib import Path
 
 tilelang = Path(importlib.util.find_spec("tilelang").submodule_search_locations[0])
@@ -781,4 +967,63 @@ efforts = ast.literal_eval(mappings)
 expected = {"minimal": 50, "low": 50, "medium": 75, "high": 75, "xhigh": 75, "max": 100}
 assert efforts == expected, efforts
 print("DeepSeek V4.1 reasoning efforts", efforts)
+
+loader = Path("/opt/spark3/candidate/vllm/vllm/model_executor/model_loader")
+assert "WeightSnapshot.for_load(self, vllm_config, model_config)" in (loader / "base_loader.py").read_text()
+snapshot = ast.parse((loader / "weight_snapshot.py").read_text())
+names = {node.name for node in snapshot.body if isinstance(node, ast.ClassDef)}
+assert {"WeightSnapshot", "SnapshotStore", "LoadProbe"} <= names, names
+print("Weight snapshot hook present (DSV41_WEIGHT_SNAPSHOT=1 enables it)")
+
+core = Path("/opt/spark3/candidate/vllm/vllm/v1")
+assert "self.kv_snapshot.restore()" in (core / "engine/core.py").read_text(), "KV snapshot restore hook (0008) missing"
+assert "def save_kv_snapshot(" in (core / "engine/core.py").read_text(), "KV snapshot save utility (0008) missing"
+kv = ast.parse((core / "core/kv_snapshot.py").read_text())
+names = {node.name for node in kv.body if isinstance(node, (ast.ClassDef, ast.FunctionDef))}
+assert {"KVSnapshot", "SnapshotDir", "rank_save", "rank_restore", "check_table", "install_table"} <= names, names
+router = Path("/opt/spark3/candidate/vllm/vllm/entrypoints/serve")
+assert '"/v1/dsv41/kv_snapshot"' in (router / "kv_snapshot/api_router.py").read_text(), "KV snapshot route (0008) missing"
+assert "attach_kv_snapshot_router(app)" in (router / "__init__.py").read_text(), "KV snapshot route (0008) not registered"
+print("Persistent prefix KV cache hooks present (DSV41_KV_PERSIST=1 enables them, POST /v1/dsv41/kv_snapshot saves)")
+
+vllm = Path("/opt/spark3/candidate/vllm/vllm")
+for path, pin in (
+    ("model_executor/layers/fused_moe/tilelang.py", "SCALE_CODES_FUSED_MOE_TILELANG_SHA256"),
+    ("models/deepseek_v4_1/tilelang/gemm.py", "SCALE_CODES_TILELANG_GEMM_SHA256"),
+    ("models/deepseek_v4_1/tilelang/moe.py", "SCALE_CODES_TILELANG_MOE_SHA256"),
+):
+    digest = hashlib.sha256((vllm / path).read_bytes()).hexdigest()
+    assert digest == os.environ[pin], f"vllm/{path} is not the scale-codes overlay's file ({digest})"
+print("MoE scale-codes overlay present")
+
+spec = vllm / "v1/worker/gpu/spec_decode"
+residual_mass = (spec / "rejection_sampler_utils.py").read_text()
+assert "if logit_idx + 1 >= tl.num_programs(0):" in residual_mass, "vllm#60945 port (0003) missing"
+assert "spec_step_seed(seed, i) if USE_BLOCK_VERIFICATION else seed" in residual_mass, "vllm#61161 port (0004) missing"
+assert "def spec_step_seed(seed, step):" in (vllm / "v1/worker/gpu/sample/gumbel.py").read_text()
+assert "spec_step_seed(tl.load(seeds_ptr + req" in (spec / "vocab_parallel.py").read_text()
+print("Block verification ports present (vllm#60945 lookahead bound, vllm#61161 step seeds)")
+
+ced = (vllm / "models/deepseek_v4_1/ced.py").read_text()
+assert "def nonfinal_limits(" in ced, "CED non-final chunk skip (0005) missing"
+state = (vllm / "models/deepseek_v4_1/nvidia/model_state.py").read_text()
+assert 'os.environ.get("DSV41_CED_SKIP_NONFINAL", "1")' in state, "CED skip gate (0005) missing"
+print("CED non-final prefill chunks keep one decoder row (DSV41_CED_SKIP_NONFINAL=0 keeps 128)")
+
+model = (vllm / "models/deepseek_v4_1/nvidia/model.py").read_text()
+assert "and not spec_config.use_dspark()" in model, "DSpark MTP buffer removal (0006) missing"
+assert "prefill_sp_skips_mtp_buffer" not in model, "DSpark MTP buffer removal (0006) incomplete"
+print("DSpark runs without the pre-collapse MTP buffer")
+
+for path, pin in (
+    ("v1/worker/gpu/spec_decode/adaptive_verification.py", "LINEAR_BUDGET_ADAPTIVE_VERIFICATION_SHA256"),
+    ("config/speculative.py", "LINEAR_BUDGET_SPECULATIVE_SHA256"),
+):
+    digest = hashlib.sha256((vllm / path).read_bytes()).hexdigest()
+    assert digest == os.environ[pin], f"vllm/{path} is not the linear-budget overlay's file ({digest})"
+runner = (vllm / "v1/worker/gpu/model_runner.py").read_text()
+assert "self.adaptive_verification.warm_tail_shapes(" in runner, "DSpark linear budget (0007) missing from the runner"
+assert "adaptive_verification_row_cost=(" in runner, "DSpark linear budget (0007) missing from the runner"
+assert runner.count("if pre_hc_hidden_states is not None:") == 2, "0006's None guard lost in the runner"
+print("DSpark draft budget by a linear step cost (adaptive_verification_row_cost, default 0.02), nothing timed")
 PY

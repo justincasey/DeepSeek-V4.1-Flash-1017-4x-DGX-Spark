@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # dsv41.sh: DeepSeek-V4.1-Flash-1017 on four DGX Sparks, TP4 over the switchless ring, on Christopher Owen's
-# spark-ds41f engine (r6v: vLLM + TileLang kernels + sparknet one-shot collectives + patched NCCL, docker/Dockerfile).
+# spark-ds41f engine (r6w: vLLM + TileLang kernels + sparknet one-shot collectives + patched NCCL, docker/Dockerfile).
 # Run from any control machine with key-based ssh to the four nodes. Nothing runs on the nodes outside docker,
 # except the Hugging Face client for `fetch` and the memory guard (a systemd unit per node, see start).
 #
@@ -14,7 +14,7 @@
 #   build                build the serving image on rank 0, ship it over the ring, verify the image ID everywhere
 #   start                arm a memory guard and start each rank (workers first), wait for the API, switch the
 #                        guards to steady, run smoke
-#   stop | restart | status | smoke
+#   stop | restart | status | smoke   (stop and restart first save the prefix KV cache when KV_PERSIST=1)
 #   logs [rank] [lines]  tail one rank's engine log (default rank 0, 200 lines)
 #   api-test [args]      full API conformance suite against the live endpoint (tests/api_conformance.py)
 #   parity               server prompt rendering == publisher encoding.py (tests/test_encoding_parity.py)
@@ -49,8 +49,8 @@ if [[ -f $ROOT/.env ]]; then
 fi
 unset _CALLER _k _v _line
 
-# Defaults are spark-ds41f r6v at shape tp4-ring (config/cluster.json @ cbf47749), as its site receipt
-# experiments/2026-10-17-site-tp4-4k-1017 ran it on a stock 4 KiB kernel.
+# Defaults are spark-ds41f r6w at shape tp4-ring (config/cluster.json @ 2dc95329, unchanged since cbf47749), as its
+# site receipt experiments/2026-10-17-site-tp4-4k-1017 ran r6v on a stock 4 KiB kernel.
 : "${NODES:=192.168.1.121 192.168.1.122 192.168.1.123 192.168.1.18}"   # management addresses, ring cable order, rank 0 first
 : "${SSH_USER:=spark}"
 : "${MODELS_DIR:=/home/spark/models}"
@@ -59,7 +59,7 @@ unset _CALLER _k _v _line
 : "${MODEL_NAME:=DeepSeek-V4.1-Flash-1017}"
 : "${CHECKSUMS:=config/DeepSeek-V4.1-Flash-1017.sha256}"
 : "${HF_BIN:=/home/spark/venvs/hf/bin/hf}"
-: "${IMAGE:=dsv41-1017-ds41f:r6v}"
+: "${IMAGE:=dsv41-1017-ds41f:r6w}"
 : "${BUILD_DIR:=/home/spark/build/dsv41-1017-ds41f}"
 : "${CACHE_DIR:=/home/spark/.cache/dsv41-ds41f}"   # mounted at /cache: JIT, TileLang, DSpark cost curves
 : "${CONTAINER:=dsv41-1017}"
@@ -70,17 +70,16 @@ unset _CALLER _k _v _line
 : "${MASTER_PORT:=9999}"
 : "${MAX_MODEL_LEN:=1048576}"
 : "${MAX_NUM_SEQS:=16}"
-: "${MAX_NUM_BATCHED_TOKENS:=8192}"
+: "${MAX_NUM_BATCHED_TOKENS:=24576}"
 : "${KV_CACHE_MEMORY_BYTES=11274289152}"   # 10.5 GiB per rank; set empty to profile
 : "${GPU_MEMORY_UTILIZATION:=0.82}"
 : "${PREFIX_CACHING:=1}"
 : "${PREFIX_CACHE_RETENTION_INTERVAL:=8192}"
-: "${KERNEL_BACKEND:=tilelang}"          # tilelang (r6v) | b12x
+: "${KERNEL_BACKEND:=tilelang}"          # tilelang (spark-ds41f r6 onward) | b12x
 : "${DSPARK:=1}"
-: "${NUM_SPECULATIVE_TOKENS:=5}"
+: "${NUM_SPECULATIVE_TOKENS:=6}"
 : "${DRAFT_SAMPLE_METHOD:=greedy}"
-: "${ADAPTIVE_VERIFICATION_COST_SCALE=2.0}"   # empty = no adaptive verification
-: "${DSPARK_COST_DIR:=}"                 # empty = one per build under /cache | off | absolute path under /cache
+: "${ADAPTIVE_VERIFICATION_ROW_COST=0.01}"   # DSpark draft budget row cost (0 < x < 1); empty = no adaptive verification
 : "${EAGER:=0}"
 : "${COMPILATION_CONFIG:=}"
 [[ -v GENERATION_DEFAULTS ]] || GENERATION_DEFAULTS='{"temperature":1.0,"top_p":1.0}'   # empty = vLLM's own
@@ -90,6 +89,12 @@ unset _CALLER _k _v _line
 : "${DRI_CARD=/dev/dri/by-path/pci-000f:01:00.0-card}"
 : "${CPUSET=5-9,15-19}"
 : "${CONTAINER_MEMORY=112g}"
+: "${GPU_CLOCKS:=2200}"                  # site policy: lock every node's GPU at this MHz at start (nvidia-smi -lgc N,N) | keep
+: "${WEIGHT_SNAPSHOT:=1}"                # 1 = per-rank loaded-weight snapshots under CACHE_DIR (docker/0002): later boots
+                                         #     read one file at NVMe speed instead of the checkpoint | 0 = always the checkpoint
+: "${KV_PERSIST:=1}"                     # 1 = the prefix KV cache survives stop/restart (docker/0008): stop saves it
+                                         #     (~10.5 GiB per node under CACHE_DIR), start restores it | 0 = cold cache
+: "${KV_SAVE_TIMEOUT:=120}"              # seconds stop waits for the KV snapshot save before stopping anyway
 : "${STARTUP_MEMGUARD_GIB:=5}"
 : "${STARTUP_MEMGUARD_INTERVAL:=0.25}"
 : "${STARTUP_MEMGUARD_WAIT:=120}"
@@ -98,6 +103,7 @@ unset _CALLER _k _v _line
 : "${EXTRA_VLLM_ARGS:=}"
 : "${EXTRA_DOCKER_ARGS:=}"
 : "${WAIT_TIMEOUT:=3600}"
+: "${STOP_GRACE:=5}"                     # seconds docker stop waits for vLLM's graceful exit before SIGKILL
 : "${STOP_OTHER:=}"
 : "${RESTORE_OTHER:=}"
 : "${ALLOWED_CONTAINERS:=}"            # other containers that may keep running alongside the ranks (space separated)
@@ -113,11 +119,10 @@ ENGRAM_SHARDS="model-00047-of-00048.safetensors model-00048-of-00048.safetensors
 # The memory guard is spark-ds41f's own scripts/memguard-start.sh + scripts/memguard.sh, which the image carries
 # unmodified from the pinned commit; start copies them out of the image and refuses any other content.
 GUARD_SRC=/opt/spark-ds41f/scripts
-GUARD_REV=cbf47749e22e25f4feb3ba9f455e8a89596eacbe
+GUARD_REV=2dc95329610188451a5c5f5af98e5c392144809c
 GUARD_SUMS="c70a379efec2e48858e86c77ab8eb90cc748700f702afe663480d92fa5c1ab09  memguard.sh
 a1c0cb8e3d78eb3b22c457bb7fba8087f79e9ac31342dc38106f7cde65bd5f15  memguard-start.sh"
 GUARD_UNIT=$CONTAINER-memguard.service
-DSPARK_COST_ROOT=/cache/kkref/dspark-costs
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 die() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
@@ -305,8 +310,9 @@ serve_common() {  # the rank-independent `vllm serve` argv (the image entrypoint
     case $DRAFT_SAMPLE_METHOD in greedy|probabilistic) ;; *) die "DRAFT_SAMPLE_METHOD must be greedy or probabilistic" ;; esac
     spec=$(printf '{"method":"dspark","num_speculative_tokens":%s,"draft_tensor_parallel_size":4,"attention_backend":"%s","draft_sample_method":"%s","rejection_sample_method":"block"' \
       "$NUM_SPECULATIVE_TOKENS" "$attn" "$DRAFT_SAMPLE_METHOD")
-    if [[ -n $ADAPTIVE_VERIFICATION_COST_SCALE ]]; then
-      spec+=$(printf ',"enable_adaptive_verification":true,"adaptive_verification_cost_scale":%s' "$ADAPTIVE_VERIFICATION_COST_SCALE")
+    if [[ -n $ADAPTIVE_VERIFICATION_ROW_COST ]]; then
+      [[ $ADAPTIVE_VERIFICATION_ROW_COST =~ ^0?\.[0-9]*[1-9][0-9]*$ ]] || die "ADAPTIVE_VERIFICATION_ROW_COST must be a number between 0 and 1 (got '$ADAPTIVE_VERIFICATION_ROW_COST')"
+      spec+=$(printf ',"enable_adaptive_verification":true,"adaptive_verification_row_cost":%s' "$ADAPTIVE_VERIFICATION_ROW_COST")
     fi
     printf '%s\n' --speculative-config "$spec}"
   fi
@@ -373,38 +379,23 @@ profile_env() {
     SPARK3_DSPARK_DEAD_ROWS_TAU=0.2 SPARK3_DSPARK_MAIN_PROJ_TP=1 SPARK3_DSPARK_PROFILE_TOKENS=random
     SPARK3_DSPARK_VOCAB_PARALLEL=1
     "SPARK3_DISPLAY_CARVEOUT_WEIGHTS=$(is_true "$DISPLAY_CARVEOUT" && echo 1 || echo 0)"
+    "DSV41_WEIGHT_SNAPSHOT=$(is_true "$WEIGHT_SNAPSHOT" && echo 1 || echo 0)"
+    "DSV41_KV_PERSIST=$(is_true "$KV_PERSIST" && echo 1 || echo 0)"
     # vLLM
+    # Drafter heads in NVFP4 (draft vocab head and Markov head): only the proposals change, every committed token
+    # is still the target's; measured +1.3% c=1 decode on this ring (spark-ds41f's TP4 run: c1 level, c8 +3.5%).
     VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 VLLM_DISABLE_PYNCCL=0 VLLM_DS41_ATTENTION_COMPUTE=auto
-    VLLM_DS41_DRAFT_NVFP4_HEAD=0 VLLM_DS41_HEAD_DTYPE=float32 "VLLM_DS41_KERNEL_BACKEND=$KERNEL_BACKEND"
-    VLLM_DS41_MARKOV_NVFP4=0 VLLM_DS41_PACKED_BF16_LM_HEAD=1 VLLM_ENABLE_PCIE_ALLREDUCE=0
+    VLLM_DS41_DRAFT_NVFP4_HEAD=1 VLLM_DS41_HEAD_DTYPE=float32 "VLLM_DS41_KERNEL_BACKEND=$KERNEL_BACKEND"
+    VLLM_DS41_MARKOV_NVFP4=1 VLLM_ENABLE_PCIE_ALLREDUCE=0
     VLLM_ENGINE_READY_TIMEOUT_S=3600 VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=900 VLLM_L2_PREFETCH_GRID=2
     VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1 VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD=1024 VLLM_PLUGINS=b12x_loader
     VLLM_USE_AOT_COMPILE=1 VLLM_USE_BREAKABLE_CUDAGRAPH=0 VLLM_USE_FLASHINFER_SAMPLER=1 VLLM_USE_MEGA_AOT_ARTIFACT=1
     VLLM_USE_STANDALONE_COMPILE=1 VLLM_USE_V2_MODEL_RUNNER=1
   )
-  # Side-stream L2 prefetch of TileLang decode projections; the B12X profiles never set it.
-  [[ $KERNEL_BACKEND == tilelang ]] && env+=(VLLM_L2_PREFETCH_KERNELS=tilelang)
+  # Side-stream L2 prefetch of TileLang decode projections; the B12X profiles never set it. The packed BF16 vocabulary
+  # head runs only through TileLang's logits projection: under B12X the head's apply() refuses it at the first step.
+  [[ $KERNEL_BACKEND == tilelang ]] && env+=(VLLM_L2_PREFETCH_KERNELS=tilelang VLLM_DS41_PACKED_BF16_LM_HEAD=1)
   for e in "${env[@]}"; do printf '%s\n' -e "$e"; done
-}
-# DSpark's verifier prices its steps from cost curves rank 0 times on a boot and pins in SPARK3_DSPARK_COST_DIR.
-# As in spark-ds41f (bin/spark build_fingerprint), the default directory is per build: a digest of the image
-# recipe (docker/), the tag, the engine environment and the serve arguments, so a changed build or flag profiles
-# once on its first boot and never schedules on another build's curves.
-build_fingerprint() {
-  local docker_digest
-  docker_digest=$(cd "$ROOT" && find docker -type f ! -name '*.pyc' ! -path '*/__pycache__/*' | LC_ALL=C sort \
-    | while IFS= read -r f; do printf '%s %s\n' "$f" "$(sha256 <"$f")"; done | sha256)
-  { echo "$docker_digest"; echo "$IMAGE"; profile_env; serve_common; } | sha256 | cut -c1-16
-}
-cost_env() {
-  local dir
-  case $DSPARK_COST_DIR in
-    off) return 0 ;;
-    "") dir=$DSPARK_COST_ROOT/build-$(build_fingerprint) || exit 1 ;;
-    /cache/?*) dir=$DSPARK_COST_DIR ;;
-    *) die "DSPARK_COST_DIR must be empty, off, or an absolute path under /cache (got '$DSPARK_COST_DIR')" ;;
-  esac
-  printf '%s\n' -e "SPARK3_DSPARK_COST_DIR=$dir"
 }
 
 docker_args() {  # docker_args RANK: docker run argv up to and including the image (spark-ds41f container.docker_run_args)
@@ -419,7 +410,6 @@ docker_args() {  # docker_args RANK: docker run argv up to and including the ima
   [[ -n $DRI_CARD ]] && printf '%s\n' "--mount=type=bind,source=$DRI_CARD,target=/dev/dri/card0" '--device-cgroup-rule=c 226:* rw'
   [[ -n $CPUSET ]] && printf '%s\n' "--cpuset-cpus=$CPUSET"
   profile_env
-  cost_env
   ring_env "$r"
   # The key is named, never valued, here: docker copies it from the remote shell's environment (cmd_start sends
   # it over ssh stdin), so it stays out of every process argv and print-serve. vLLM reads VLLM_API_KEY.
@@ -650,13 +640,30 @@ ship_image() {   # ship_image FROM TO: stream the image across the cable between
 
 drop_caches() { every 'sync; sudo -n sysctl -q -w vm.drop_caches=$LEVEL 2>/dev/null || true' LEVEL="${1:-3}"; }
 
+# kv_save: with KV_PERSIST=1, ask the engine to write its prefix cache (docker/0008: every rank's KV buffer plus
+# the scheduler's table under CACHE_DIR/dsv41/kv-snapshots) before the ranks go down, so the next start restores
+# it. abort=true: requests still running are aborted first (the stop would end them anyway). Skipped when the API
+# does not answer; a failed or timed-out save is logged and never blocks the stop.
+kv_save() {
+  is_true "$KV_PERSIST" || return 0
+  [[ $KV_SAVE_TIMEOUT =~ ^[1-9][0-9]*$ ]] || { log "WARN: KV_SAVE_TIMEOUT must be a positive integer; KV snapshot not saved"; return 0; }
+  curl -sf -m 2 "$URL/health" >/dev/null 2>&1 || return 0
+  local out code t0=$SECONDS
+  out=$(curl -sS -m "$KV_SAVE_TIMEOUT" -X POST -H @<(auth_header) -w '\n%{http_code}' \
+    "$URL/v1/dsv41/kv_snapshot?abort=true" 2>&1) || true
+  code=${out##*$'\n'}
+  if [[ $code == 200 ]]; then log "KV snapshot saved in $((SECONDS - t0))s: ${out%$'\n'*}"
+  else log "WARN: KV snapshot not saved after $((SECONDS - t0))s ($(tr '\n' ' ' <<<"$out")); stopping anyway"; fi
+  return 0
+}
 cmd_stop() {
+  kv_save
   every 'sudo -n systemctl stop "$UNIT" >/dev/null 2>&1 || true
          if docker ps -a --format "{{.Names}}" | grep -qx "$C"; then
-           docker stop -t 60 "$C" >/dev/null 2>&1 || true
+           docker stop -t "$G" "$C" >/dev/null 2>&1 || true
            docker logs "$C" > "$HOME/$C.prev.log" 2>&1 || true
            docker rm -f "$C" >/dev/null; echo stopped
-         else echo "not running"; fi' C="$CONTAINER" UNIT="$GUARD_UNIT"
+         else echo "not running"; fi' C="$CONTAINER" UNIT="$GUARD_UNIT" G="$STOP_GRACE"
 }
 
 # ── memory guard ───────────────────────────────────────────────────────────────────────────────
@@ -686,11 +693,15 @@ guard_cmd() {
   esac
 }
 # install_guards: copy spark-ds41f's scripts/ out of the image on every node (docker create + cp, nothing runs) and
-# refuse it unless memguard.sh and memguard-start.sh are byte-identical to the pinned commit.
+# refuse it unless memguard.sh and memguard-start.sh are byte-identical to the pinned commit. A node whose installed
+# copy already matches the pinned sums keeps it (the content is what is pinned, not the image it came from).
 install_guards() {
   every '
     sudo -n true 2>/dev/null || { echo "no passwordless sudo: the memory guard cannot run"; exit 1; }
     G=$HOME/.local/lib/$C-memguard
+    if [ -d "$G/scripts" ] && (cd "$G/scripts" && printf "%s\n" "$SUMS" | sha256sum --check --status); then
+      echo "memory guard: spark-ds41f@$REV (installed)"; exit 0
+    fi
     rm -rf "$G.new"; mkdir -p "$G.new"
     id=$(docker create "$IMAGE")
     if docker cp "$id:$SRC" "$G.new/scripts" >/dev/null 2>&1; then ok=1; else ok=0; fi
@@ -718,16 +729,26 @@ cmd_start() {
   [[ -z $(sed 's/^\[r[0-9]\] //' <<<"$running" | grep .) ]] || die "other containers are running (./dsv41.sh stop-other, or ALLOWED_CONTAINERS):"$'\n'"$running"
   out=$(cmd_stop 2>&1) || die "stop before start failed:"$'\n'"$out"
   out=$(drop_caches 3 2>&1) || die "page cache drop failed:"$'\n'"$out"
+  if [[ $GPU_CLOCKS =~ ^[1-9][0-9]*$ ]]; then
+    out=$(every 'sudo -n nvidia-smi -lgc "$F,$F" >/dev/null' F="$GPU_CLOCKS" 2>&1) || die "GPU clock lock failed:"$'\n'"$out"
+  elif [[ $GPU_CLOCKS != keep ]]; then die "GPU_CLOCKS must be a clock in MHz or keep (got '$GPU_CLOCKS')"; fi
   out=$(every 'mkdir -p "$D"' D="$CACHE_DIR" 2>&1) || die "cannot create $CACHE_DIR:"$'\n'"$out"
   out=$(install_guards 2>&1) || die "memory guard install failed:"$'\n'"$out"
-  for r in 3 2 1 0; do
-    # The key rides the prelude (ssh stdin); docker_args names it for rank 0 only.
-    remote "$r" "$guard"$'\n'"docker ${cmd[$r]} >/dev/null || { sudo -n systemctl stop \"\$UNIT\" >/dev/null 2>&1 || true; exit 1; }" \
-      UNIT="$GUARD_UNIT" VLLM_API_KEY="$API_KEY" || { cmd_stop >/dev/null 2>&1; die "guarded docker run failed on rank $r"; }
-    log "rank $r started on ${NODE[$r]} under its startup memory guard"
-  done
+  log "prepared: stopped, caches dropped, clocks, guards"
+  # Workers start together, the head last (spark-ds41f's deployment order: the head's rendezvous finds them up).
+  launch_rank() {
+    remote "$1" "$guard"$'\n'"docker ${cmd[$1]} >/dev/null || { sudo -n systemctl stop \"\$UNIT\" >/dev/null 2>&1 || true; exit 1; }" \
+      UNIT="$GUARD_UNIT" VLLM_API_KEY="$API_KEY"
+  }
+  local -a lp=(); local failed=""
+  for r in 3 2 1; do launch_rank "$r" & lp+=($!); done
+  for r in 3 2 1; do wait "${lp[$((3 - r))]}" || failed+=" $r"; done
+  [[ -z $failed ]] || { cmd_stop >/dev/null 2>&1; die "guarded docker run failed on rank(s)$failed"; }
+  log "ranks 3 2 1 started under their startup memory guards"
+  launch_rank 0 || { cmd_stop >/dev/null 2>&1; die "guarded docker run failed on rank 0"; }
+  log "rank 0 started on ${NODE[0]} under its startup memory guard"
   log "waiting for $URL (up to ${WAIT_TIMEOUT}s; first boot prepares the TileLang kernels into $CACHE_DIR)"
-  local t0=$SECONDS dead
+  local t0=$SECONDS dead last=$SECONDS
   while (( SECONDS - t0 < WAIT_TIMEOUT )); do
     if curl -sf -m 5 "$URL/health" >/dev/null; then
       log "up after $((SECONDS - t0))s: $URL/v1"
@@ -735,15 +756,19 @@ cmd_start() {
       echo "$out"
       cmd_smoke; return
     fi
-    dead=$(every 'docker ps --format "{{.Names}}" | grep -qx "$C" || echo DEAD; systemctl is-active --quiet "$UNIT" || echo UNGUARDED' \
-      C="$CONTAINER" UNIT="$GUARD_UNIT" | grep -E 'DEAD|UNGUARDED' || true)
-    if [[ -n $dead ]]; then
-      echo "$dead"
-      for r in 0 1 2 3; do echo "── rank $r"; remote "$r" 'docker logs --tail 40 "$C" 2>&1 || tail -40 "$HOME/$C.prev.log"; journalctl -t spark-memguard --since "-15min" --no-pager 2>/dev/null | tail -5 || true' C="$CONTAINER" || true; done
-      cmd_stop >/dev/null 2>&1 || true; die "a rank exited or lost its memory guard during startup"
+    # Health is polled every second; the liveness check and the page-cache drop keep their 10 s cadence.
+    if (( SECONDS - last >= 10 )); then
+      last=$SECONDS
+      dead=$(every 'docker ps --format "{{.Names}}" | grep -qx "$C" || echo DEAD; systemctl is-active --quiet "$UNIT" || echo UNGUARDED' \
+        C="$CONTAINER" UNIT="$GUARD_UNIT" | grep -E 'DEAD|UNGUARDED' || true)
+      if [[ -n $dead ]]; then
+        echo "$dead"
+        for r in 0 1 2 3; do echo "── rank $r"; remote "$r" 'docker logs --tail 40 "$C" 2>&1 || tail -40 "$HOME/$C.prev.log"; journalctl -t spark-memguard --since "-15min" --no-pager 2>/dev/null | tail -5 || true' C="$CONTAINER" || true; done
+        cmd_stop >/dev/null 2>&1 || true; die "a rank exited or lost its memory guard during startup"
+      fi
+      drop_caches 1 >/dev/null || log "WARN: drop_caches failed on a rank"
     fi
-    drop_caches 1 >/dev/null || log "WARN: drop_caches failed on a rank"
-    sleep 10
+    sleep 1
   done
   die "API not up after ${WAIT_TIMEOUT}s (./dsv41.sh logs)"
 }
