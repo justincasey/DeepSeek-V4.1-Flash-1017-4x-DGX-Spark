@@ -90,6 +90,7 @@ unset _CALLER _k _v _line
 : "${DRI_CARD=/dev/dri/by-path/pci-000f:01:00.0-card}"
 : "${CPUSET=5-9,15-19}"
 : "${CONTAINER_MEMORY=112g}"
+: "${GPU_CLOCKS:=reset}"                 # reset = `nvidia-smi -rgc` on every node at start | keep
 : "${STARTUP_MEMGUARD_GIB:=5}"
 : "${STARTUP_MEMGUARD_INTERVAL:=0.25}"
 : "${STARTUP_MEMGUARD_WAIT:=120}"
@@ -718,6 +719,9 @@ cmd_start() {
   [[ -z $(sed 's/^\[r[0-9]\] //' <<<"$running" | grep .) ]] || die "other containers are running (./dsv41.sh stop-other, or ALLOWED_CONTAINERS):"$'\n'"$running"
   out=$(cmd_stop 2>&1) || die "stop before start failed:"$'\n'"$out"
   out=$(drop_caches 3 2>&1) || die "page cache drop failed:"$'\n'"$out"
+  if [[ $GPU_CLOCKS == reset ]]; then
+    out=$(every 'sudo -n nvidia-smi -rgc >/dev/null' 2>&1) || die "GPU clock reset failed:"$'\n'"$out"
+  elif [[ $GPU_CLOCKS != keep ]]; then die "GPU_CLOCKS must be reset or keep (got '$GPU_CLOCKS')"; fi
   out=$(every 'mkdir -p "$D"' D="$CACHE_DIR" 2>&1) || die "cannot create $CACHE_DIR:"$'\n'"$out"
   out=$(install_guards 2>&1) || die "memory guard install failed:"$'\n'"$out"
   for r in 3 2 1 0; do
