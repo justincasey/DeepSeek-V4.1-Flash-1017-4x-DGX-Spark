@@ -209,7 +209,8 @@ for r in 0 1 2 3; do
   [[ $(wc -l <<<"$c" | tr -d ' ') == 2 ]] || bad ".env.example rank $r: expected guard + docker lines"
 done
 c=$(cd "$tmp" && env -i PATH="$PATH" HOME="$HOME" ./dsv41.sh print-serve 0 | sed -n 2p)
-has "$c" 'SPARKNET_ROCE_PEER_HCAS=\{\"3\":\[\"rocep1s0f0\"\]\,\"1\":\[\"rocep1s0f1\"\]\}' && has "$c" "NCCL_IB_HCA==rocep1s0f0\,rocep1s0f1" \
+has "$c" 'SPARKNET_ROCE_PEER_HCAS=\{\"3\":\[\"rocep1s0f0\"\,\"roceP2p1s0f0\"\]\,\"1\":\[\"rocep1s0f1\"\,\"roceP2p1s0f1\"\]\}' \
+  && has "$c" "NCCL_IB_HCA==roceP2p1s0f0\,roceP2p1s0f1\,rocep1s0f0\,rocep1s0f1" \
   && ok ".env.example renders the measured ring without ssh" || bad ".env.example ring: $(envval "$c" SPARKNET_ROCE_PEER_HCAS)"
 
 # pinned memory-guard scripts: the copy start installs must be spark-ds41f's own at the pinned commit

@@ -1,0 +1,124 @@
+{
+ "step": "check",
+ "ok": false,
+ "started": "2026-10-17T21:26:04-0500",
+ "finished": "2026-10-17T21:26:15-0500",
+ "base_url": "http://192.168.1.121:8000",
+ "model": "deepseek-v4.1-flash",
+ "args": {
+  "base_url": "http://192.168.1.121:8000",
+  "model": "deepseek-v4.1-flash",
+  "timeout": 7200.0,
+  "step": "all",
+  "out": null,
+  "seconds": 30.0,
+  "max_tokens": 512,
+  "types": "prose,code,structured,json",
+  "lengths": "4k,16k,32k,64k,128k,256k,512k,1M",
+  "tokens": 1000000,
+  "reference": "/Users/justin/recipes/DeepSeek-V4.1-Flash-1017-4x-DGX-Spark/bench/reference.json",
+  "conc": "1,2,4,8",
+  "ignore_eos": false
+ },
+ "results": {
+  "reference": "/Users/justin/recipes/DeepSeek-V4.1-Flash-1017-4x-DGX-Spark/bench/reference.json",
+  "rows": [
+   {
+    "name": "prose",
+    "compared": "token_ids",
+    "ref_ids": [
+     488,
+     13504,
+     1055,
+     270,
+     82453,
+     554,
+     412,
+     260
+    ],
+    "got_ids": [
+     10743,
+     4628,
+     1055,
+     270,
+     12709,
+     14,
+     260,
+     2237
+    ],
+    "divergence": 3,
+    "match": false
+   },
+   {
+    "name": "code",
+    "compared": "token_ids",
+    "divergence": null,
+    "match": true
+   },
+   {
+    "name": "math",
+    "compared": "token_ids",
+    "ref_ids": [
+     2581,
+     588,
+     1347,
+     270,
+     108622,
+     5538,
+     979,
+     7490
+    ],
+    "got_ids": [
+     36954,
+     666,
+     9832,
+     223,
+     19,
+     28,
+     29027,
+     270
+    ],
+    "divergence": 17,
+    "match": false
+   },
+   {
+    "name": "json",
+    "compared": "token_ids",
+    "divergence": null,
+    "match": true
+   },
+   {
+    "name": "reasoning_off",
+    "compared": "token_ids",
+    "ref_ids": [
+     3287,
+     344,
+     2619,
+     27,
+     77460,
+     671,
+     17132,
+     811
+    ],
+    "got_ids": [
+     19075,
+     344,
+     295,
+     270,
+     80240,
+     28,
+     811,
+     578
+    ],
+    "divergence": 1,
+    "match": false
+   },
+   {
+    "name": "summary",
+    "compared": "token_ids",
+    "divergence": null,
+    "match": true
+   }
+  ]
+ }
+}

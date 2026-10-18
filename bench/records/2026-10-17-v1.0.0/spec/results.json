@@ -1,0 +1,124 @@
+{
+ "step": "spec",
+ "ok": true,
+ "started": "2026-10-17T21:23:40-0500",
+ "finished": "2026-10-17T21:26:04-0500",
+ "base_url": "http://192.168.1.121:8000",
+ "model": "deepseek-v4.1-flash",
+ "args": {
+  "base_url": "http://192.168.1.121:8000",
+  "model": "deepseek-v4.1-flash",
+  "timeout": 7200.0,
+  "step": "all",
+  "out": null,
+  "seconds": 30.0,
+  "max_tokens": 512,
+  "types": "prose,code,structured,json",
+  "lengths": "4k,16k,32k,64k,128k,256k,512k,1M",
+  "tokens": 1000000,
+  "reference": "/Users/justin/recipes/DeepSeek-V4.1-Flash-1017-4x-DGX-Spark/bench/reference.json",
+  "conc": "1,2,4,8",
+  "ignore_eos": false
+ },
+ "results": {
+  "settings": {
+   "seconds": 30.0,
+   "max_tokens": 512,
+   "concurrency": 1,
+   "prompt_types": [
+    "prose",
+    "code",
+    "structured",
+    "json"
+   ]
+  },
+  "spec_metric_names": [
+   "vllm:spec_decode_num_accepted_tokens_created",
+   "vllm:spec_decode_num_accepted_tokens_per_pos_created",
+   "vllm:spec_decode_num_accepted_tokens_per_pos_total",
+   "vllm:spec_decode_num_accepted_tokens_total",
+   "vllm:spec_decode_num_draft_tokens_created",
+   "vllm:spec_decode_num_draft_tokens_total",
+   "vllm:spec_decode_num_drafts_created",
+   "vllm:spec_decode_num_drafts_total"
+  ],
+  "rows": [
+   {
+    "prompt_type": "prose",
+    "tok_s": 36.01789797559303,
+    "requests": 3,
+    "errors": 0,
+    "accepted": 787.0,
+    "drafts": 753.0,
+    "draft_tokens": 2259.0,
+    "mean_accepted_per_draft": 1.045152722443559,
+    "acceptance_rate": 0.3483842408145197,
+    "accepted_per_position": {
+     "0": 463.0,
+     "1": 223.0,
+     "2": 101.0
+    }
+   },
+   {
+    "prompt_type": "code",
+    "tok_s": 54.968359307873854,
+    "requests": 4,
+    "errors": 0,
+    "accepted": 1406.0,
+    "drafts": 644.0,
+    "draft_tokens": 1932.0,
+    "mean_accepted_per_draft": 2.1832298136645965,
+    "acceptance_rate": 0.727743271221532,
+    "accepted_per_position": {
+     "0": 537.0,
+     "1": 462.0,
+     "2": 407.0
+    }
+   },
+   {
+    "prompt_type": "structured",
+    "tok_s": 48.39431981699094,
+    "requests": 3,
+    "errors": 0,
+    "accepted": 996.0,
+    "drafts": 546.0,
+    "draft_tokens": 1638.0,
+    "mean_accepted_per_draft": 1.8241758241758241,
+    "acceptance_rate": 0.608058608058608,
+    "accepted_per_position": {
+     "0": 444.0,
+     "1": 317.0,
+     "2": 235.0
+    }
+   },
+   {
+    "prompt_type": "json",
+    "tok_s": 48.30401642235878,
+    "requests": 3,
+    "errors": 0,
+    "accepted": 975.0,
+    "drafts": 562.0,
+    "draft_tokens": 1686.0,
+    "mean_accepted_per_draft": 1.7348754448398576,
+    "acceptance_rate": 0.5782918149466192,
+    "accepted_per_position": {
+     "0": 419.0,
+     "1": 310.0,
+     "2": 246.0
+    }
+   }
+  ],
+  "total": {
+   "accepted": 4164.0,
+   "drafts": 2505.0,
+   "draft_tokens": 7515.0,
+   "mean_accepted_per_draft": 1.6622754491017964,
+   "acceptance_rate": 0.5540918163672655,
+   "accepted_per_position": {
+    "0": 1863.0,
+    "1": 1312.0,
+    "2": 989.0
+   }
+  }
+ }
+}

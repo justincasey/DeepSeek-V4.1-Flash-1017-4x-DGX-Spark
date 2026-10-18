@@ -1,0 +1,37 @@
+{
+ "step": "needle",
+ "ok": true,
+ "started": "2026-10-17T21:07:12-0500",
+ "finished": "2026-10-17T21:23:40-0500",
+ "base_url": "http://192.168.1.121:8000",
+ "model": "deepseek-v4.1-flash",
+ "args": {
+  "base_url": "http://192.168.1.121:8000",
+  "model": "deepseek-v4.1-flash",
+  "timeout": 7200.0,
+  "step": "all",
+  "out": null,
+  "seconds": 30.0,
+  "max_tokens": 512,
+  "types": "prose,code,structured,json",
+  "lengths": "4k,16k,32k,64k,128k,256k,512k,1M",
+  "tokens": 1000000,
+  "reference": "/Users/justin/recipes/DeepSeek-V4.1-Flash-1017-4x-DGX-Spark/bench/reference.json",
+  "conc": "1,2,4,8",
+  "ignore_eos": false
+ },
+ "results": {
+  "settings": {
+   "tokens": 1000000,
+   "target": 1000000,
+   "max_model_len": 1048576,
+   "nonce": "8223522cb56a",
+   "code": "23459",
+   "max_tokens": 16
+  },
+  "prompt_tokens": 1000006,
+  "seconds": 985.0190498329998,
+  "answer": "23459",
+  "passed": true
+ }
+}

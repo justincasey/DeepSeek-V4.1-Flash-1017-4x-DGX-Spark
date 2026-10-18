@@ -1,0 +1,83 @@
+{
+ "step": "prefill",
+ "ok": true,
+ "started": "2026-10-17T20:36:57-0500",
+ "finished": "2026-10-17T21:07:12-0500",
+ "base_url": "http://192.168.1.121:8000",
+ "model": "deepseek-v4.1-flash",
+ "args": {
+  "base_url": "http://192.168.1.121:8000",
+  "model": "deepseek-v4.1-flash",
+  "timeout": 7200.0,
+  "step": "all",
+  "out": null,
+  "seconds": 30.0,
+  "max_tokens": 512,
+  "types": "prose,code,structured,json",
+  "lengths": "4k,16k,32k,64k,128k,256k,512k,1M",
+  "tokens": 1000000,
+  "reference": "/Users/justin/recipes/DeepSeek-V4.1-Flash-1017-4x-DGX-Spark/bench/reference.json",
+  "conc": "1,2,4,8",
+  "ignore_eos": false
+ },
+ "results": {
+  "settings": {
+   "lengths": "4k,16k,32k,64k,128k,256k,512k,1M",
+   "max_model_len": 1048576,
+   "nonce": "c1c301721151",
+   "max_tokens": 1,
+   "tokens_per_word": 1.5925,
+   "sized_with_tokenize": true
+  },
+  "rows": [
+   {
+    "target": 4096,
+    "prompt_tokens": 4087,
+    "seconds": 1.9118413339999734,
+    "tok_s": 2137.729699278516
+   },
+   {
+    "target": 16384,
+    "prompt_tokens": 16367,
+    "seconds": 9.006562708000047,
+    "tok_s": 1817.2304496877673
+   },
+   {
+    "target": 32768,
+    "prompt_tokens": 32753,
+    "seconds": 17.21737791700002,
+    "tok_s": 1902.3221862174776
+   },
+   {
+    "target": 65536,
+    "prompt_tokens": 65518,
+    "seconds": 36.19361637500003,
+    "tok_s": 1810.208720818933
+   },
+   {
+    "target": 131072,
+    "prompt_tokens": 131054,
+    "seconds": 76.016961208,
+    "tok_s": 1724.0099830011086
+   },
+   {
+    "target": 262144,
+    "prompt_tokens": 262133,
+    "seconds": 178.02401116700003,
+    "tok_s": 1472.4586772404502
+   },
+   {
+    "target": 524288,
+    "prompt_tokens": 524260,
+    "seconds": 408.86083362500005,
+    "tok_s": 1282.2455879470276
+   },
+   {
+    "target": 1048576,
+    "prompt_tokens": 1048079,
+    "seconds": 1082.5853212499999,
+    "tok_s": 968.1260030293433
+   }
+  ]
+ }
+}
