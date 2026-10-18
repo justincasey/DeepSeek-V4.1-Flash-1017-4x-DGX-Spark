@@ -90,7 +90,7 @@ unset _CALLER _k _v _line
 : "${DRI_CARD=/dev/dri/by-path/pci-000f:01:00.0-card}"
 : "${CPUSET=5-9,15-19}"
 : "${CONTAINER_MEMORY=112g}"
-: "${GPU_CLOCKS:=reset}"                 # reset = `nvidia-smi -rgc` on every node at start | keep
+: "${GPU_CLOCKS:=2200}"                  # site policy: lock every node's GPU at this MHz at start (nvidia-smi -lgc N,N) | keep
 : "${WEIGHT_SNAPSHOT:=1}"                # 1 = per-rank loaded-weight snapshots under CACHE_DIR (docker/0002): later boots
                                          #     read one file at NVMe speed instead of the checkpoint | 0 = always the checkpoint
 : "${STARTUP_MEMGUARD_GIB:=5}"
@@ -383,14 +383,15 @@ profile_env() {
     # is still the target's; measured +1.3% c=1 decode on this ring (spark-ds41f's TP4 run: c1 level, c8 +3.5%).
     VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 VLLM_DISABLE_PYNCCL=0 VLLM_DS41_ATTENTION_COMPUTE=auto
     VLLM_DS41_DRAFT_NVFP4_HEAD=1 VLLM_DS41_HEAD_DTYPE=float32 "VLLM_DS41_KERNEL_BACKEND=$KERNEL_BACKEND"
-    VLLM_DS41_MARKOV_NVFP4=1 VLLM_DS41_PACKED_BF16_LM_HEAD=1 VLLM_ENABLE_PCIE_ALLREDUCE=0
+    VLLM_DS41_MARKOV_NVFP4=1 VLLM_ENABLE_PCIE_ALLREDUCE=0
     VLLM_ENGINE_READY_TIMEOUT_S=3600 VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=900 VLLM_L2_PREFETCH_GRID=2
     VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1 VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD=1024 VLLM_PLUGINS=b12x_loader
     VLLM_USE_AOT_COMPILE=1 VLLM_USE_BREAKABLE_CUDAGRAPH=0 VLLM_USE_FLASHINFER_SAMPLER=1 VLLM_USE_MEGA_AOT_ARTIFACT=1
     VLLM_USE_STANDALONE_COMPILE=1 VLLM_USE_V2_MODEL_RUNNER=1
   )
-  # Side-stream L2 prefetch of TileLang decode projections; the B12X profiles never set it.
-  [[ $KERNEL_BACKEND == tilelang ]] && env+=(VLLM_L2_PREFETCH_KERNELS=tilelang)
+  # Side-stream L2 prefetch of TileLang decode projections; the B12X profiles never set it. The packed BF16 vocabulary
+  # head runs only through TileLang's logits projection: under B12X the head's apply() refuses it at the first step.
+  [[ $KERNEL_BACKEND == tilelang ]] && env+=(VLLM_L2_PREFETCH_KERNELS=tilelang VLLM_DS41_PACKED_BF16_LM_HEAD=1)
   for e in "${env[@]}"; do printf '%s\n' -e "$e"; done
 }
 # DSpark's verifier prices its steps from cost curves rank 0 times on a boot and pins in SPARK3_DSPARK_COST_DIR.
@@ -729,9 +730,9 @@ cmd_start() {
   [[ -z $(sed 's/^\[r[0-9]\] //' <<<"$running" | grep .) ]] || die "other containers are running (./dsv41.sh stop-other, or ALLOWED_CONTAINERS):"$'\n'"$running"
   out=$(cmd_stop 2>&1) || die "stop before start failed:"$'\n'"$out"
   out=$(drop_caches 3 2>&1) || die "page cache drop failed:"$'\n'"$out"
-  if [[ $GPU_CLOCKS == reset ]]; then
-    out=$(every 'sudo -n nvidia-smi -rgc >/dev/null' 2>&1) || die "GPU clock reset failed:"$'\n'"$out"
-  elif [[ $GPU_CLOCKS != keep ]]; then die "GPU_CLOCKS must be reset or keep (got '$GPU_CLOCKS')"; fi
+  if [[ $GPU_CLOCKS =~ ^[1-9][0-9]*$ ]]; then
+    out=$(every 'sudo -n nvidia-smi -lgc "$F,$F" >/dev/null' F="$GPU_CLOCKS" 2>&1) || die "GPU clock lock failed:"$'\n'"$out"
+  elif [[ $GPU_CLOCKS != keep ]]; then die "GPU_CLOCKS must be a clock in MHz or keep (got '$GPU_CLOCKS')"; fi
   out=$(every 'mkdir -p "$D"' D="$CACHE_DIR" 2>&1) || die "cannot create $CACHE_DIR:"$'\n'"$out"
   out=$(install_guards 2>&1) || die "memory guard install failed:"$'\n'"$out"
   log "prepared: stopped, caches dropped, clocks, guards"
