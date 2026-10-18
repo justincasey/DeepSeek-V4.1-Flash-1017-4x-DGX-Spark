@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Static contract test: no GPU, no ssh, no network. Generates every rank's memory-guard arm + docker run + vllm
-# serve command with pinned ring values and checks the invariants a deployment depends on (spark-ds41f r6v at
-# tp4-ring, config/cluster.json @ cbf47749).
+# serve command with pinned ring values and checks the invariants a deployment depends on (spark-ds41f r6w at
+# tp4-ring, config/cluster.json @ 2dc95329).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
@@ -212,6 +212,17 @@ c=$(cd "$tmp" && env -i PATH="$PATH" HOME="$HOME" ./dsv41.sh print-serve 0 | sed
 has "$c" 'SPARKNET_ROCE_PEER_HCAS=\{\"3\":\[\"rocep1s0f0\"\,\"roceP2p1s0f0\"\]\,\"1\":\[\"rocep1s0f1\"\,\"roceP2p1s0f1\"\]\}' \
   && has "$c" "NCCL_IB_HCA==roceP2p1s0f0\,roceP2p1s0f1\,rocep1s0f0\,rocep1s0f1" \
   && ok ".env.example renders the measured ring without ssh" || bad ".env.example ring: $(envval "$c" SPARKNET_ROCE_PEER_HCAS)"
+
+# weight snapshots: every rank must get the same switch (the fail-closed restore all-reduces across ranks; a rank
+# that disagrees leaves the others waiting at boot), on by default and off with WEIGHT_SNAPSHOT=0
+for want in 1 0; do
+  vals=""
+  for r in 0 1 2 3; do
+    c=$(cd "$tmp" && env -i PATH="$PATH" HOME="$HOME" $([[ $want == 0 ]] && echo WEIGHT_SNAPSHOT=0) ./dsv41.sh print-serve "$r" | sed -n 2p)
+    vals+="$(envval "$c" DSV41_WEIGHT_SNAPSHOT) "
+  done
+  [[ $vals == "$want $want $want $want " ]] && ok "DSV41_WEIGHT_SNAPSHOT=$want on every rank" || bad "DSV41_WEIGHT_SNAPSHOT per rank: $vals(want $want)"
+done
 
 # pinned memory-guard scripts: the copy start installs must be spark-ds41f's own at the pinned commit
 grep -q '^GUARD_REV=2dc95329610188451a5c5f5af98e5c392144809c$' dsv41.sh && ok "memory guard pinned to spark-ds41f@2dc95329" \

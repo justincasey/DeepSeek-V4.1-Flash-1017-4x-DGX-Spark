@@ -75,7 +75,7 @@ unset _CALLER _k _v _line
 : "${GPU_MEMORY_UTILIZATION:=0.82}"
 : "${PREFIX_CACHING:=1}"
 : "${PREFIX_CACHE_RETENTION_INTERVAL:=8192}"
-: "${KERNEL_BACKEND:=tilelang}"          # tilelang (r6v) | b12x
+: "${KERNEL_BACKEND:=tilelang}"          # tilelang (spark-ds41f r6 onward) | b12x
 : "${DSPARK:=1}"
 : "${NUM_SPECULATIVE_TOKENS:=5}"
 : "${DRAFT_SAMPLE_METHOD:=greedy}"

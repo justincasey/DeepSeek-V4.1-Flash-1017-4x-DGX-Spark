@@ -4,11 +4,12 @@ Serve [DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.
 checkpoint (MXFP4 routed experts, FP8 dense) from four NVIDIA DGX Sparks joined in a switchless QSFP ring, behind
 an OpenAI-compatible API, with a 1,048,576-token window and 16 concurrent sequences.
 
-The engine is Christopher Owen's [spark-ds41f](https://github.com/christopherowen/spark-ds41f) release **r6v**
+The engine is Christopher Owen's [spark-ds41f](https://github.com/christopherowen/spark-ds41f) release **r6w**
 (Apache-2.0): Local Inference Lab's vLLM fork with his patch series, the TileLang SM121 kernel family, DeepSeek's
 TileKernels, sparknet one-shot RoCE collectives and a patched NCCL. `docker/Dockerfile` rebuilds his image from the
-pinned upstreams (spark-ds41f at `cbf47749`) and adds one patch of ours; `dsv41.sh` serves his `tp4-ring`
-configuration through our controller, on the stock DGX OS 4 KiB-page kernel.
+pinned upstreams (spark-ds41f at `2dc95329`) and adds two patches of ours (effort aliases, and weight snapshots for
+a quick boot); `dsv41.sh` serves his `tp4-ring` configuration, tuned for this ring, through our controller, on the
+stock DGX OS 4 KiB-page kernel.
 
 One script, run from a control machine, does everything:
 
@@ -25,34 +26,42 @@ cp .env.example .env        # set NODES (management addresses, ring cable order,
 
 ## Headline numbers
 
-Measured on this ring with the same harnesses: v1.0.0 (the previous engine, [fallback](#fallback-to-v100)) on
-2026-10-17, and this engine on 2026-10-17/18 with this repo's defaults (image `sha256:875c7c9edc08…`, checkpoint
-`1bae0e1`). Decode: greedy, thinking off, `max_tokens` 512, 30 s windows, tokens counted from `usage`. Method and
-full tables under [Benchmarks](#benchmarks).
+Measured on this ring with the same harnesses, checkpoint `1bae0e1`: v1.0.0 (the previous engine,
+[fallback](#fallback)) on 2026-10-17; r6v, tagged `v2.0.0`, on 2026-10-17/18 (image `sha256:875c7c9edc08…`); and
+this repo's current defaults (r6w with this ring's tuning, [what changed](#current-defaults-against-r6v)) on
+2026-10-18. Decode: greedy, thinking off, `max_tokens` 512, 30 s windows, tokens counted from `usage`. "Not rerun"
+marks measurements taken on r6v only. Method and full tables under [Benchmarks](#benchmarks).
 
-| Measurement | v1.0.0 | r6v (this engine) | Change |
+| Measurement | v1.0.0 | r6v (`v2.0.0`) | Current defaults (r6w) |
 |---|---|---|---|
-| Decode, one request, prose / code | 35.8 / 55.1 tok/s | **61.4 / 87.2 tok/s** | 1.7× / 1.6× |
-| Decode, 4 requests aggregate, prose / code | 89.9 / 132.4 tok/s | **204.4 / 229.4 tok/s** | 2.3× / 1.7× |
-| Decode, 16 requests aggregate, prose / code | not possible (4 sequences) | **551.8 / 574.7 tok/s** | |
-| Prefill, unique text, 128K / 1M tokens | 1,724 / 968 tok/s | **5,916 / 4,160 tok/s** | 3.4× / 4.3× |
-| Needle at 1,000,006 prompt tokens | PASS, 985 s | **PASS, 236.6 s** | 4.2× |
-| Salted cold needle, ~545K prompt tokens | PASS, 547,579 tokens at 1,157 tok/s | **PASS, 545,008 tokens at 5,030 tok/s** | 4.3× |
-| qeval, 75 tasks, greedy | 71/75 (median 48.4 tok/s) | 71/75 (median 86.3 tok/s) | same score |
-| Quality gate, 50 exact-answer questions, greedy | 49/50 | 49/50, all 50 answers identical to v1.0.0 | same |
-| API conformance (`api-test`) | 25/26 | **26/26** | |
-| Encoding parity (`parity`) | 15/15 | 15/15 | |
-| Token-id oracle (`bench check`) | 3/6 prompts match | **6/6, three runs** | |
-| KV pool per rank | 2,666,467 tokens in 13 GiB | **8,580,566 tokens in 10.5 GiB** (8.18× a full 1M request) | 3.2× |
-| Concurrent sequences at 1M | 4 | **16** | 4× |
-| Boot to API (`start`) | ~340 s | 396 s first boot, including the TileLang kernel preparation | |
+| Decode, one request, prose / code | 35.8 / 55.1 tok/s | 61.4 / 87.2 tok/s | **65.5 / 94.2 tok/s** |
+| Decode, one request, structured / json | 48.8 / 48.0 tok/s | 80.6 / 88.5 tok/s | **83.7 / 89.9 tok/s** |
+| Decode, 4 requests aggregate, prose / code | 89.9 / 132.4 tok/s | 204.4 / 229.4 tok/s | not rerun |
+| Decode, 16 requests aggregate, prose / code | not possible (4 sequences) | 551.8 / 574.7 tok/s | not rerun |
+| Prefill, unique text, 32K / 128K / 512K tokens | 1,902 / 1,724 / 1,282 tok/s | 6,013 / 5,916 / 5,042 tok/s | **6,698 / 6,663 / 5,671 tok/s** |
+| Prefill, unique text, 1M tokens | 968 tok/s | 4,160 tok/s | not rerun |
+| Needle at ~1M prompt tokens | PASS, 985 s (1,000,006 tokens) | PASS, 236.6 s (1,000,006 tokens) | **PASS, 222.4 s** (1,039,976 tokens) |
+| Salted cold needle, ~545K prompt tokens | PASS, 547,579 tokens at 1,157 tok/s | PASS, 545,008 tokens at 5,030 tok/s | not rerun |
+| qeval, 75 tasks, greedy | 71/75 (median 48.4 tok/s) | 71/75 (median 86.3 tok/s) | not rerun |
+| Quality gate, 50 exact-answer questions, greedy | 49/50 | 49/50, all 50 answers identical to v1.0.0 | 49/50 |
+| API conformance (`api-test`) | 25/26 | 26/26 | not rerun |
+| Encoding parity (`parity`) | 15/15 | 15/15 | not rerun |
+| Token-id oracle (`bench check`) | 3/6 prompts match | 6/6, three runs | **6/6 against r6v's pin** |
+| KV pool per rank | 2,666,467 tokens in 13 GiB | 8,580,566 tokens in 10.5 GiB (8.18× a full 1M request) | same 10.5 GiB budget; tokens not re-measured |
+| Concurrent sequences at 1M | 4 | 16 | 16 |
+| Boot | ~340 s to API | 396 s first boot, including the TileLang kernel preparation; restart 139-140 s | **restart 110 s** from weight snapshots; ~184 s once per build and configuration ([Quick boot](#quick-boot)) |
 
-Temperature-0 output no longer depends on load: an identical request returns the same tokens and logprobs alone,
-eight at once, staggered, mixed with other prompts, and with or without a prefix-cache hit
-([Determinism](#determinism)). MemAvailable stays at 17.6-19.6 GiB per node idle and 17.6-19.5 GiB after a 1M
-prefill and needle.
+Restart is `stop` + `start` + `smoke`, wall time. Temperature-0 output does not depend on load: on r6v an identical
+request returned the same tokens and logprobs alone, eight at once, staggered, mixed with other prompts, and with or
+without a prefix-cache hit ([Determinism](#determinism)); the current defaults still match r6v's token-id oracle on
+all six prompts.
 
-Sustained load: a 20-minute soak (16 rounds of 16 concurrent streams × 1,024 tokens) finished with 0 failed
+Memory: r6v at 8,192 batched tokens kept MemAvailable at 17.6-19.6 GiB per node idle and 17.6-19.5 GiB after a 1M
+prefill and needle. The current 16,384 batched tokens spend some of that headroom: the lowest MemAvailable during
+the 1M needle was 13.9 GiB on the head and 16.2-16.3 GiB on the other nodes, and the tightest node sat at
+~14.1-14.5 GiB idle and after the benchmarks, all well above the 3 GiB steady guard.
+
+Sustained load (r6v): a 20-minute soak (16 rounds of 16 concurrent streams × 1,024 tokens) finished with 0 failed
 requests and no NCCL, sparknet or CUDA errors on any rank; throughput held steady (217.1 → 217.4 tok/s for that
 prompt set) and MemAvailable stayed at 17.7-19.5 GiB per node.
 
@@ -98,7 +107,7 @@ default ([Configuration](#configuration)). Then:
 
 | Step | What it does |
 |---|---|
-| `doctor` | read-only. Ring: scans every node, checks pins against the live ring, pings each next rank across its cable, warns on MTU ≠ 9000. Per node: docker, image ID equal to rank 0's and built from spark-ds41f `cbf47749` (image label), GPU processes, MemAvailable, NVMe and `/` free space, kernel and page size, sysctls, `CPUSET` equal to the node's fast cores, `DRI_CARD` present, passwordless sudo, `systemd-run`, checkpoint shard count, Engram shard filesystem and fragmentation (`e4defrag -c`), memory guard state |
+| `doctor` | read-only. Ring: scans every node, checks pins against the live ring, pings each next rank across its cable, warns on MTU ≠ 9000. Per node: docker, image ID equal to rank 0's and built from spark-ds41f `2dc95329` (image label), GPU processes, MemAvailable, NVMe and `/` free space, kernel and page size, sysctls, `CPUSET` equal to the node's fast cores, `DRI_CARD` present, passwordless sudo, `systemd-run`, checkpoint shard count, Engram shard filesystem and fragmentation (`e4defrag -c`), memory guard state |
 | `fetch` | sizes the pinned files from the Hugging Face API and splits them into four size-balanced parts; each rank downloads its part over its own uplink. Rank 0 gathers the parts over the cables, fans the full tree back out, then every node is sha256-verified against `config/DeepSeek-V4.1-Flash-1017.sha256`. Resumable: files a node already holds at full size are not downloaded again |
 | `verify` | the sha256 check alone, all four nodes in parallel |
 | `build` | rsyncs `docker/` to `BUILD_DIR` on rank 0 and builds `IMAGE` there ([The image](#the-image)), runs spark-ds41f's GPU import smoke when rank 0 has 24 GiB available, streams the image over the cables with `docker save \| docker load` (0→1 and 0→3, then 1→2), and prints the image ID on every node |
@@ -111,19 +120,22 @@ default ([Configuration](#configuration)). Then:
 ./dsv41.sh status       # containers, memory guard state, available memory, /v1/models
 ./dsv41.sh logs 0 200   # tail one rank's engine log
 ./dsv41.sh bench decode # benchmarks (bench/bench.py; results in bench/runs/)
-./dsv41.sh stop         # stops the guards and all ranks; each log is kept as ~/$CONTAINER.prev.log
+./dsv41.sh stop         # stops the guards and all ranks (STOP_GRACE s, then SIGKILL); each log is kept as ~/$CONTAINER.prev.log
 ./dsv41.sh restart
 ./dsv41.sh print-serve 0   # the exact guard arm + docker run + vllm serve for one rank, no side effects
 ```
 
 `start` builds every rank's command first, so a configuration error starts nothing. It re-scans the ring and
-refuses stale `RING_*` pins, refuses if foreign containers run, stops any old ranks, drops the page cache, and
-installs the memory guard on every node. Then, for ranks 3, 2, 1 (headless) and finally rank 0, it arms that node's
-startup guard and runs the container. It polls `/health` for up to `WAIT_TIMEOUT` seconds, dropping the page cache
-between polls; if any rank's container exits or loses its guard it prints the last 40 log lines and the guard's
-journal for every rank, stops the rest and fails. When the API answers it switches every node to the steady guard
-and runs `smoke`. The first boot of a new image prepares the TileLang kernels into `CACHE_DIR` and takes longer
-([Known limits](#known-limits)).
+refuses stale `RING_*` pins, refuses if foreign containers run, stops any old ranks, drops the page cache, resets the
+GPU clocks on every node (`GPU_CLOCKS`), and installs the memory guard on every node (a node whose installed copy
+already matches the pinned checksums keeps it). Then it arms each node's startup guard and runs the container on
+ranks 3, 2 and 1 (headless) in parallel, and finally on rank 0. It polls `/health` every second for up to
+`WAIT_TIMEOUT` seconds; every 10 s it checks that each rank's container and guard are alive and drops the page
+cache. If any rank's container exits or loses its guard it prints the last 40 log lines and the guard's journal for
+every rank, stops the rest and fails. When the API answers it switches every node to the steady guard and runs
+`smoke`. With `WEIGHT_SNAPSHOT=1` each rank restores its loaded weights from a snapshot in `CACHE_DIR` instead of
+reading the checkpoint ([Quick boot](#quick-boot)). The first boot of a new image prepares the TileLang kernels into
+`CACHE_DIR` and writes the snapshots, and takes longer ([Known limits](#known-limits)).
 
 ### Go-live and rollback
 
@@ -253,19 +265,23 @@ The rendezvous port (`MASTER_PORT`) and the cables are not authenticated: keep t
 ## Configuration
 
 Precedence: environment, then `.env`, then the defaults in `dsv41.sh`. `.env` is parsed, not sourced; `#` starts a
-comment only at the start of a value or after whitespace. Defaults are spark-ds41f r6v at shape `tp4-ring`
-(`config/cluster.json` at `cbf47749`). [`.env.example`](.env.example) documents every key; the groups:
+comment only at the start of a value or after whitespace. Defaults are spark-ds41f r6w at shape `tp4-ring`
+(`config/cluster.json` at `2dc95329`, unchanged since `cbf47749`) with this ring's tuning on top: 16,384 batched
+tokens, NVFP4 drafter heads, a GPU clock reset at `start`, weight snapshots and a 5 s stop grace
+([Current defaults against r6v](#current-defaults-against-r6v)). [`.env.example`](.env.example) documents every
+key; the groups:
 
 | Group | Keys | Defaults and notes |
 |---|---|---|
 | The Sparks | `NODES`, `SSH_USER` | four management addresses in ring cable order, rank 0 first (rank 0 serves the API); `spark` |
 | Checkpoint | `MODELS_DIR`, `MODEL_REPO`, `MODEL_REVISION`, `MODEL_NAME`, `CHECKSUMS`, `HF_BIN` | `/home/spark/models`, same absolute path on every node (Engram shards 47/48 must be local files); revision `1bae0e1` pinned with a sha256 manifest; mounted read-only at `/models` |
-| Image and fabric | `IMAGE`, `BUILD_DIR`, `CACHE_DIR`, `CONTAINER`, `MASTER_PORT` | `dsv41-1017-ds41f:r6v`; `CACHE_DIR` is mounted at `/cache` on every node and keeps the JIT/TileLang/Triton caches and DSpark cost curves across boots; `CONTAINER` also names the guard unit (`$CONTAINER-memguard.service`); rendezvous on port 9999 |
+| Image and fabric | `IMAGE`, `BUILD_DIR`, `CACHE_DIR`, `CONTAINER`, `MASTER_PORT` | `dsv41-1017-ds41f:r6w`; `CACHE_DIR` is mounted at `/cache` on every node and keeps the JIT/TileLang/Triton caches, DSpark cost curves and weight snapshots (~72 GiB per node) across boots; `CONTAINER` also names the guard unit (`$CONTAINER-memguard.service`); rendezvous on port 9999 |
 | Serving | `SERVED_NAME`, `HOST`, `PORT`, `API_KEY` | `deepseek-v4.1-flash` on `0.0.0.0:8000`; `API_KEY` empty = no authentication |
-| Sizing | `MAX_MODEL_LEN`, `MAX_NUM_SEQS`, `MAX_NUM_BATCHED_TOKENS`, `GPU_MEMORY_UTILIZATION`, `KV_CACHE_MEMORY_BYTES` | 1,048,576 tokens, 16 sequences, 8,192 tokens per step (the long-prefill threshold is this minus the decode rows); a fixed 10.5 GiB KV budget per rank (`11274289152`; empty = vLLM profiling); utilization 0.82 is always passed and then only gates vLLM's startup free-memory check |
-| Engine | `PREFIX_CACHING`, `PREFIX_CACHE_RETENTION_INTERVAL`, `KERNEL_BACKEND`, `GENERATION_DEFAULTS`, `TEXT_ONLY`, `MAX_IMAGES`, `WAIT_TIMEOUT` | prefix caching on with retention interval 8192; `tilelang` (r6v) or `b12x` (spark-ds41f's pre-r6 backend, in the same image); `{"temperature":1.0,"top_p":1.0}`; images on, 4 per prompt; `start` waits up to 3600 s |
+| Sizing | `MAX_MODEL_LEN`, `MAX_NUM_SEQS`, `MAX_NUM_BATCHED_TOKENS`, `GPU_MEMORY_UTILIZATION`, `KV_CACHE_MEMORY_BYTES` | 1,048,576 tokens, 16 sequences, 16,384 tokens per step (the long-prefill threshold is this minus the decode rows, `MAX_NUM_SEQS` × (k+1): 16,288 at the defaults); a fixed 10.5 GiB KV budget per rank (`11274289152`; empty = vLLM profiling); utilization 0.82 is always passed and then only gates vLLM's startup free-memory check |
+| Engine | `PREFIX_CACHING`, `PREFIX_CACHE_RETENTION_INTERVAL`, `KERNEL_BACKEND`, `GENERATION_DEFAULTS`, `TEXT_ONLY`, `MAX_IMAGES` | prefix caching on with retention interval 8192; `tilelang` (the TileLang SM121 family) or `b12x` (spark-ds41f's pre-r6 backend, in the same image); `{"temperature":1.0,"top_p":1.0}`; images on, 4 per prompt |
+| Boot and stop | `WEIGHT_SNAPSHOT`, `WAIT_TIMEOUT`, `STOP_GRACE` | weight snapshots on: each rank snapshots its loaded weights on the first boot of a build and configuration and restores them on later boots (`0` = always read the checkpoint; [Quick boot](#quick-boot)); `start` waits up to 3600 s; `stop` gives vLLM 5 s to exit before SIGKILL (its graceful exit took ~14 s; nothing survives a stop either way) |
 | DSpark and CUDA graphs | `DSPARK`, `NUM_SPECULATIVE_TOKENS`, `DRAFT_SAMPLE_METHOD`, `ADAPTIVE_VERIFICATION_COST_SCALE`, `DSPARK_COST_DIR`, `EAGER`, `COMPILATION_CONFIG` | DSpark on (the drafter ships in the checkpoint), k=5, greedy drafts, block verification, adaptive verification at cost scale 2.0 (empty = off); cost curves in one directory per build (`off` or a `/cache/...` path to override); `FULL_AND_PIECEWISE` graphs on spark-ds41f's capture ladder up to `MAX_NUM_SEQS` × (k+1) rows (96 at the defaults); `EAGER=1` disables graphs; `COMPILATION_CONFIG` replaces the compilation JSON verbatim |
-| Host resources | `CPUSET`, `CONTAINER_MEMORY`, `DRI_CARD`, `DISPLAY_CARVEOUT` | ranks pinned to GB10's ten Cortex-X925 cores `5-9,15-19` (`doctor` checks them per node); `--memory`/`--memory-swap` 112g; the nvidia DRM card bound at `/dev/dri/card0`; embedding and head in the display carve-out off (`1` needs `DRI_CARD` and `nvidia-drm` modeset). Empty disables each |
+| Host resources | `CPUSET`, `CONTAINER_MEMORY`, `DRI_CARD`, `DISPLAY_CARVEOUT`, `GPU_CLOCKS` | ranks pinned to GB10's ten Cortex-X925 cores `5-9,15-19` (`doctor` checks them per node); `--memory`/`--memory-swap` 112g; the nvidia DRM card bound at `/dev/dri/card0`; embedding and head in the display carve-out off (`1` needs `DRI_CARD` and `nvidia-drm` modeset); empty disables each of these. `GPU_CLOCKS=reset` runs `nvidia-smi -rgc` on every node at `start` (a leftover clock lock held these GB10s at 2,184 MHz under load; unlocked they run at 2,470-2,502 MHz); `keep` leaves the clocks as they are |
 | Memory guard | `STARTUP_MEMGUARD_GIB`, `STARTUP_MEMGUARD_INTERVAL`, `STARTUP_MEMGUARD_WAIT`, `MEMGUARD_GIB`, `MEMGUARD_INTERVAL` | 5 GiB sampled every 0.25 s while loading (waits up to 120 s for its container); 3 GiB every 2 s once the API answers. The startup threshold must exceed the steady one ([Known limits](#known-limits)) |
 | Other stacks | `ALLOWED_CONTAINERS`, `STOP_OTHER`, `RESTORE_OTHER` | containers that may keep running beside the ranks (`.env.example`: `mentatd glm53-nfs`); shell commands for `stop-other` / `restore-other` |
 | Advanced | `EXTRA_VLLM_ARGS`, `EXTRA_DOCKER_ARGS` | appended to `vllm serve` / to `docker run` before the image (`-e K=V` overrides an engine variable) |
@@ -278,30 +294,62 @@ comment only at the start of a value or after whitespace. Defaults are spark-ds4
 | Piece | What |
 |---|---|
 | Model | DeepSeek-V4.1-Flash-1017, native checkpoint (MXFP4 routed experts, FP8 dense, BF16 drafter head), revision `1bae0e1`, every file pinned by sha256 in `config/`; every node keeps a full local copy |
-| Engine | spark-ds41f r6v by Christopher Owen: Local Inference Lab's vLLM `integration/karmic-kraken-beta` at `19f2c20` + his r6v vLLM series (172 patches); B12X `236ddff` + 11 patches (checkpoint loader, vision tower kernels, the alternative kernel backend); TileLang 0.1.15 `b95ee4f` + 4 patches (among them SM12x block-scaled MMA); DeepSeek TileKernels 2.0.0 `66258df` + 1 patch; sparknet 0.3.0 `3bc8d10`; NCCL 2.30.7 rebuilt for SM121 + 4 patches (the IB send-path fence NVIDIA/nccl#2393, bidirectional switchless rings, balanced channels, adaptive small-ring threads); runtime base the vLLM nightly image `af1c014` (CUDA 13.0.2), pinned by digest |
-| Our patch | `docker/0001-*.patch`: `reasoning_effort` `minimal` → 50 and `medium` → 75, which the fork rejected with a 400 |
+| Engine | spark-ds41f r6w by Christopher Owen: Local Inference Lab's vLLM `integration/karmic-kraken-beta` at `19f2c20` + his r6w vLLM series (173 patches: r6v's 172 plus 0181, the routed SwiGLU and MXFP8 cast over the live tiles); B12X `236ddff` + 11 patches (checkpoint loader, vision tower kernels, the alternative kernel backend); TileLang 0.1.15 `b95ee4f` + 4 patches (among them SM12x block-scaled MMA); DeepSeek TileKernels 2.0.0 `66258df` + 1 patch; sparknet 0.3.0 `3bc8d10`; NCCL 2.30.7 rebuilt for SM121 + 4 patches (the IB send-path fence NVIDIA/nccl#2393, bidirectional switchless rings, balanced channels, adaptive small-ring threads); runtime base the vLLM nightly image `af1c014` (CUDA 13.0.2), pinned by digest |
+| Our patches | `docker/0001-*.patch`: `reasoning_effort` `minimal` → 50 and `medium` → 75, which the fork rejected with a 400; `docker/0002-*.patch`: per-rank snapshots of the loaded weights, restored on later boots ([Quick boot](#quick-boot)) |
 | Kernels | the TileLang SM121 family (sparse MLA, MXFP4 indexer, FP8 and BF16 projections, FP8 × FP4 routed experts, vocabulary heads, RoPE, compressor, KV writers, Engram gate/hash/gather, WO), DeepSeek's TileKernels for the MoE gate, SwiGLU/quant casts and mHC, L2 weight prefetch during decode (`KERNEL_BACKEND=tilelang`) |
 | Precision | spark-ds41f follows DeepSeek's reference `inference/model.py`: FP32 logits from an exact packed BF16 head, FP32 mHC projection, shared-expert SwiGLU in FP32, MoE partials rounded once per rank, WO-A input through `act_quant`; batch-invariant reductions and rank-ordered collectives (his description; [Credits](#credits)) |
 | Engram | tables read from local disk by a native io_uring row reader (`--engram-config` `table_memory: disk`), projections sharded over TP, sequence-parallel row exchange relayed on the ring |
-| Drafting | DSpark (the drafter in the checkpoint): k=5, greedy drafts, block verification, adaptive verification priced from cost curves rank 0 profiles once per build and keeps in `/cache` |
+| Drafting | DSpark (the drafter in the checkpoint): k=5, greedy drafts, block verification, adaptive verification priced from cost curves rank 0 profiles once per build and keeps in `/cache`; the draft vocabulary and Markov heads run in NVFP4 (`VLLM_DS41_DRAFT_NVFP4_HEAD=1`, `VLLM_DS41_MARKOV_NVFP4=1`: draft step 2.60 → 1.91 ms), and the target still commits every token |
 | Graphs | `FULL_AND_PIECEWISE` CUDA graphs captured at 1, 2, 3, 4, 6, 8, 12 … 32, then every 8th row up to 96; kernels prepared before memory profiling, `--jit-monitor-mode warn` logs any JIT after ready |
 | Split | TP4 across the four Sparks (attention, dense and experts), vLLM's multiprocess executor over `--nnodes 4`; rank 0 serves the API, ranks 1-3 headless; one prefill at a time |
-| KV | fixed 10.5 GiB per rank: 8,580,566 tokens, 8.18× a full 1M request (measured at boot) |
+| KV | fixed 10.5 GiB per rank: 8,580,566 tokens, 8.18× a full 1M request (measured at boot on r6v) |
 | Fabric | sparknet one-shot collectives up to 2 MiB, patched NCCL ring above that, both PCIe functions per cable ([The ring](#the-ring)) |
-| Host | per rank: the ten fast cores, a 112 GiB cgroup limit, `seccomp=unconfined` (Docker's default profile blocks io_uring), `--ipc=host`, unlimited memlock; spark-ds41f's fail-closed memory guard as a systemd unit per node |
-| Controller | `dsv41.sh`: bash over ssh from the control machine; `print-serve` shows each rank's exact commands |
+| Host | per rank: the ten fast cores, a 112 GiB cgroup limit, `seccomp=unconfined` (Docker's default profile blocks io_uring), `--ipc=host`, unlimited memlock; spark-ds41f's fail-closed memory guard as a systemd unit per node; GPU clocks reset (`nvidia-smi -rgc`) at every `start` |
+| Boot | each rank restores its loaded weights (71.86 GiB) from a snapshot under `CACHE_DIR` at 10-12.7 GB/s and reruns post-processing on them; fail-closed to the checkpoint ([Quick boot](#quick-boot)) |
+| Controller | `dsv41.sh`: bash over ssh from the control machine; workers launched in parallel, `/health` polled every second; `print-serve` shows each rank's exact commands |
 
 ### The image
 
 `docker build -f docker/Dockerfile` (linux/arm64) reads only `docker/`. Its `fetch` stage clones spark-ds41f at
-`cbf47749` and runs **his own** build-preparation code (`bin/spark build prepare`) against the r6v lock: each upstream
-is fetched at its pinned commit and its patch series applied unmodified with `git am`; the patch-set fingerprint,
-patch head, tree and TileLang's submodule commits must equal his manifest, and the Dockerfile's pins must equal his
-lock. The build stages after `fetch` are his `docker/Dockerfile` at that commit with his build-time checks kept
-(B12X imports and liburing, NCCL version and sha256, TileLang/TileKernels wheel records, sparknet proxy ABI). Ours on
-top: the effort patch, a TileLang SM12x block-scaled MMA check, his memory-guard and smoke scripts under
-`/opt/spark-ds41f`, and image labels that `doctor` checks. Any mismatch fails the build. The image contains no
-weights. spark-ds41f's external 4 KiB site reports its build at 630 s with MemAvailable never below 73.7 GiB.
+`2dc95329` and runs **his own** build-preparation code (`bin/spark build prepare`) against the r6w lock
+(`experiments/2026-10-18-r6w-swiglu`): each upstream is fetched at its pinned commit and its patch series applied
+unmodified with `git am`; the patch-set fingerprint, patch head, tree and TileLang's submodule commits must equal his
+manifest, and the Dockerfile's pins must equal his lock. The build stages after `fetch` are his `docker/Dockerfile`
+at that commit with his build-time checks kept (B12X imports and liburing, NCCL version and sha256,
+TileLang/TileKernels wheel records, sparknet proxy ABI). Ours on top: a `dsv41-vllm` stage that applies our two
+patches to his vLLM tree (the effort aliases and the weight snapshots, Python only, so his native extensions build
+unchanged; the resulting patch head and tree are pinned), a TileLang SM12x block-scaled MMA check, file checks of
+both patches, his memory-guard and smoke scripts under `/opt/spark-ds41f`, and image labels that `doctor` checks.
+Any mismatch fails the build. The image contains no weights. spark-ds41f's external 4 KiB site reports its build at
+630 s with MemAvailable never below 73.7 GiB.
+
+### Quick boot
+
+Each rank used to spend 31.3 s of every boot loading its share of the checkpoint. With `WEIGHT_SNAPSHOT=1` (the
+default; the engine sees `DSV41_WEIGHT_SNAPSHOT=1`), our `docker/0002-*.patch` hooks vLLM's model loader:
+
+- **First boot of a build and configuration**: each rank loads the checkpoint as usual and, right after
+  `load_weights` and before post-processing, writes every storage behind its parameters and buffers (71.86 GiB per
+  rank) to one file under `CACHE_DIR/dsv41/weight-snapshots`, with a manifest (tensor layout, a CRC32 per 64 MiB
+  chunk, the plain-data attributes `load_weights` set) and a completion marker. That boot took ~184 s here, once;
+  ranks 0 and 1 wrote at 2.6-3.1 GB/s, ranks 2 and 3 at ~11.7 GB/s.
+- **Later boots**: each rank builds the model, reads its snapshot with O_DIRECT straight into the same storages at
+  10-12.7 GB/s, CRC32-checked, and then runs the usual post-processing, which sees bit-identical inputs and rebuilds
+  every derived tensor itself. Model loading drops from 31.3 to 18.4 s per rank.
+- **Fail-closed**: every rank must hold a valid snapshot for the same key, or every rank loads the checkpoint; a
+  snapshot that fails to read or check is deleted. The key covers the checkpoint files (sizes, mtimes, safetensors
+  headers), the rank, the vLLM and B12X sources, Torch, the device, vLLM's config hash, the engine environment and
+  `DSV41_WEIGHT_SNAPSHOT_TAG`, so a rebuilt image or a changed configuration writes a new snapshot.
+
+With the controller changes (memory guard reused when its pinned checksums match, workers launched in parallel,
+`/health` polled every second, `STOP_GRACE=5`), a restart (`stop` + `start` + `smoke`) takes 110 s instead of
+139-140 s, with the engine up after 88 s instead of 109 s. The patch's own knobs, set with `EXTRA_DOCKER_ARGS`
+(`-e K=V`): `DSV41_WEIGHT_SNAPSHOT_DIR` (default `/cache/dsv41/weight-snapshots`), `DSV41_WEIGHT_SNAPSHOT_TAG`
+(change it to invalidate every snapshot), `DSV41_WEIGHT_SNAPSHOT_KEEP` (snapshots kept per rank, default 1),
+`DSV41_WEIGHT_SNAPSHOT_VERIFY` (`0` skips the CRC32 check) and `DSV41_WEIGHT_SNAPSHOT_DIGEST` (`1` writes per-tensor
+CRC32 digests of the processed model, to compare a restored boot with a checkpoint boot). The idea of per-rank
+weight snapshots comes from [kindlingai/glm-5.3-flash-gx10](https://github.com/kindlingai/glm-5.3-flash-gx10)'s
+processed-weight snapshots; the implementation is ours, no code taken ([Credits](#credits)).
 
 ## Benchmarks
 
@@ -316,10 +364,58 @@ The qualification battery adds three external clients, not shipped here: MiaAI-L
 the salted cold needle (`needle_salted.py`) from spark-ds41f's external site receipt, and spark-ds41f's
 `token_determinism_text.py` (`experiments/2026-10-12-r6g`), so results compare with their records.
 
+### Current defaults against r6v
+
+Measured on 2026-10-18 with the same client and settings as the r6v record
+([`bench/records/2026-10-18-r6v`](bench/records/2026-10-18-r6v/summary.md)): decode c=1 aggregate tok/s, greedy,
+thinking off, `max_tokens` 512, 30 s windows; prefill on unique prompts.
+
+| Measurement | r6v (`v2.0.0`) | Current defaults (r6w) |
+|---|---:|---:|
+| Decode c=1, prose / code / structured / json (tok/s) | 61.4 / 87.2 / 80.6 / 88.5 | 65.5 / 94.2 / 83.7 / 89.9 |
+| Prefill, 32K / 128K / 512K (tok/s) | 6,013 / 5,916 / 5,042 | 6,698 / 6,663 / 5,671 |
+| Needle at ~1M prompt tokens | PASS, 236.6 s | PASS, 222.4 s (1,039,976 tokens) |
+| Restart (`stop` + `start` + `smoke`) / engine up | 139-140 s / 109 s | 110 s / 88 s |
+| Model loading per rank | 31.3 s | 18.4 s |
+
+Mean gain: decode c=1 +5.0%, prefill +12.2%. What changed, in the order it landed:
+
+1. **GPU clock reset** (`GPU_CLOCKS=reset`): a leftover application-clock lock held these GB10s at 2,184 MHz under
+   load; after `nvidia-smi -rgc` they run at 2,470-2,502 MHz.
+2. **`MAX_NUM_BATCHED_TOKENS` 8,192 → 16,384** (long-prefill threshold 16,288): larger prefill steps, paid for in
+   MemAvailable (below).
+3. **Engine r6v → r6w** (spark-ds41f `2dc95329`): vLLM 0181 runs the routed SwiGLU over the live tiles only; outputs
+   are bit-identical.
+4. **NVFP4 drafter heads** (`VLLM_DS41_DRAFT_NVFP4_HEAD=1`, `VLLM_DS41_MARKOV_NVFP4=1`): a draft step takes 1.91 ms
+   instead of 2.60 ms; only the proposals change, the target still commits every token.
+5. **Quick boot**: the controller changes and the weight snapshots ([Quick boot](#quick-boot)).
+
+**Checks** on the current defaults: `bench check` against the oracle pinned on r6v, 6/6 prompts match; quality gate
+49/50; the thinking-mode corruption probe at 9/13, as on r6v ([Known limits](#known-limits)). `api-test`, `parity`,
+qeval, the salted needle, the determinism suite, 1M prefill and c=4/c=16 decode were not rerun.
+
+**Memory**: the lowest MemAvailable during the 1M needle was 13.9 GiB on the head and 16.2-16.3 GiB on the other
+nodes; idle and after the benchmarks the tightest node sat at ~14.1-14.5 GiB.
+
+**Why c=1 decode stops near +5%**: a torch profile shows the GPU 98.5% busy. The routed-expert GEMM (~18 ms of a
+~34 ms round) already runs near the LPDDR5x bandwidth floor, and the 88 one-shot all-reduces per round at ~48 µs
+each (~4 ms) are latency-bound, with no sparknet tuning knobs left.
+
+**Tried and rejected** (measured on this ring, defaults kept):
+
+- DSpark dead-row tau 0, 0.1, 0.15, 0.35 and 0.5 (0.2 stays);
+- adaptive verification cost scale 1, 3, 6 and 12 (2.0 stays);
+- L2 weight-prefetch grid 1 and 4 (2 stays), and 24 MB prefetch budgets;
+- k=4 (k=5 stays);
+- a single RoCE lane per cable for sparknet;
+- unpinned CPUs (`CPUSET` stays);
+- a clock lock at 3,003 MHz (`nvidia-smi -lgc`): GB10 stays at ~2,470 MHz, no gain over the reset;
+- `VLLM_DS41_HEAD_DTYPE=model`: its apparent +3% was a different greedy trajectory, with ms per round unchanged.
+
 ### r6v against v1.0.0
 
 Both measured on this ring at 1M context, checkpoint `1bae0e1`, each with its own defaults: v1.0.0 (the previous
-engine, [fallback](#fallback-to-v100)) on 2026-10-17 with 4 sequences and DSpark k=3; r6v on 2026-10-17/18 with
+engine, [fallback](#fallback)) on 2026-10-17 with 4 sequences and DSpark k=3; r6v on 2026-10-17/18 with
 16 sequences and DSpark k=5, image `sha256:875c7c9edc08…`. Records:
 [`bench/records/2026-10-17-v1.0.0`](bench/records/2026-10-17-v1.0.0/summary.md) and
 [`bench/records/2026-10-18-r6v`](bench/records/2026-10-18-r6v/summary.md) (c=16 in its `decode-c16/`).
@@ -391,6 +487,7 @@ with a reference run of the same prompt, temperature 0, with logprobs. Every sce
 and 0 logprob differences: eight requests at once (`c8`), staggered starts, mixed with other prompts (`mixed`,
 `mixed15`), a prefix-cache hit against a miss (`cached`), and a repeat (`again`). The token-id oracle
 (`bench pin`, then `bench check` three times) matched on all six prompts every time.
+The current defaults still match that r6v oracle on all six prompts; the determinism suite was not rerun on them.
 
 ### Boot and memory (r6v)
 
@@ -402,8 +499,8 @@ and 0 logprob differences: eight requests at once (`c8`), staggered starts, mixe
 | MemAvailable per node, idle | 17.6-19.6 GiB |
 | MemAvailable per node after a 1M prefill and the 1M needle | 17.6-19.5 GiB |
 
-The startup guard trips at 5 GiB and the steady guard at 3 GiB, so serving leaves ~14 GiB of margin on the tightest
-node.
+On r6v the startup guard (5 GiB) and steady guard (3 GiB) left ~14 GiB of margin on the tightest node. The current
+defaults leave ~11 GiB above the steady guard at the lowest point of the 1M needle (13.9 GiB on the head).
 
 ### For reference: spark-ds41f's published numbers
 
@@ -421,7 +518,7 @@ Their numbers, from their harnesses and sites, not measured here and not directl
 
 | Test | Needs | What it guards |
 |---|---|---|
-| `tests/test-recipe.sh` | nothing (no GPU, ssh or network) | generates every rank's guard arm + `docker run` + `vllm serve` with pinned ring values and checks the invariants the deployment depends on (spark-ds41f r6v `tp4-ring`); shell and python syntax |
+| `tests/test-recipe.sh` | nothing (no GPU, ssh or network) | generates every rank's guard arm + `docker run` + `vllm serve` with pinned ring values and checks the invariants the deployment depends on (spark-ds41f `tp4-ring` with this repo's defaults, the weight-snapshot switch equal on every rank); shell and python syntax |
 | `tests/api_conformance.py` (`./dsv41.sh api-test`) | live API | 26 cases: endpoints, sampling controls, thinking/reasoning, every effort tier, tool calling, structured output, image input, long context, auth and error handling; one PASS/FAIL line per case |
 | `tests/test_encoding_parity.py` (`./dsv41.sh parity`) | live API, network | the server's rendered prompt equals DeepSeek's `encoding.py` at the pinned revision, token for token: golden fixtures, thinking on/off and default, every effort tier and alias, namespaced tools, the tool-loop turn rule |
 | `bench check` | live API | token-id regression against `bench/reference.json` |
@@ -433,13 +530,23 @@ Their numbers, from their harnesses and sites, not measured here and not directl
   unrelated text at the default temperature 1.0. Prefill reproduces it, so CUDA graphs and DSpark are ruled out.
   Thinking-off requests were clean in every sample. Root cause unknown; see
   [docs/findings/2026-10-18-thinking-mode-output-corruption.md](docs/findings/2026-10-18-thinking-mode-output-corruption.md).
+  The current defaults leave it unchanged: the corruption probe (`bench/corruption_probe.py`) reports 9/13 on r6v and
+  on them.
 - **Image token in text → 400.** A message whose text contains DeepSeek's literal image token
   (`<｜deepseek_image｜>`) is rejected: "Images should be provided as image content blocks". This is DeepSeek's
   encoder validation, applied to every role (spark-ds41f's vLLM 0178 follows it). Agents that paste DeepSeek source
   code or docs into a prompt or tool result hit it.
-- **First boot is slow.** Each rank prepares its kernels before memory profiling into `CACHE_DIR`, and DSpark profiles
-  its cost curves once per build: the first boot here took 396 s to the API. Later boots reuse both. Keep `CACHE_DIR`
-  on persistent local disk; `WAIT_TIMEOUT` defaults to 3600 s.
+- **First boot is slow.** Each rank prepares its kernels before memory profiling into `CACHE_DIR`, DSpark profiles its
+  cost curves once per build, and each rank writes its weight snapshot: the first r6v boot took 396 s to the API,
+  and a boot that writes the snapshots ~184 s here. Later boots reuse all three. Keep `CACHE_DIR` on persistent
+  local disk; `WAIT_TIMEOUT` defaults to 3600 s.
+- **Weight snapshots use disk.** Each node keeps ~72 GiB (71.86 GiB for its rank) under
+  `CACHE_DIR/dsv41/weight-snapshots`, written once per build and configuration. Rebuilding the image or changing
+  anything in the snapshot key (engine environment, vLLM configuration, checkpoint files,
+  `DSV41_WEIGHT_SNAPSHOT_TAG`) invalidates them: the next boot reads the checkpoint and writes new ones, replacing
+  the old (one kept per rank). A rank whose cache filesystem cannot hold the snapshot with 4 GiB to spare skips the
+  write, and every rank then keeps loading the checkpoint. `WEIGHT_SNAPSHOT=0` turns snapshots off; delete the
+  directory to reclaim the space.
 - **The memory guard kills, by design.** A guard SIGKILLs its rank when MemAvailable drops below its threshold
   (5 GiB while loading, 3 GiB serving) or when the container can no longer be inspected. TP4 cannot continue on three
   ranks, so a kill stops the service: read `./dsv41.sh logs` and the guard journal (`journalctl -t spark-memguard`),
@@ -453,23 +560,29 @@ Their numbers, from their harnesses and sites, not measured here and not directl
 - Publisher golden fixtures 3-4 use an internal role the OpenAI API cannot express, so `parity` skips them;
   fixture 5 (images) is covered by the live image test in `api-test`.
 
-## Fallback to v1.0.0
+## Fallback
 
-The previous engine of this recipe is tagged `v1.0.0` in git; its image is `dsv41-1017-spark:v1.0.0` on all four
-nodes. To go back: `./dsv41.sh stop`, `git checkout v1.0.0`, start from that tag's own `.env.example` (its keys
-differ) with `IMAGE=dsv41-1017-spark:v1.0.0`, then `./dsv41.sh start`. Its README and NOTICE describe and credit
-that engine.
+**v2.0.0** tags this recipe on r6v with its defaults: image `dsv41-1017-ds41f:r6v`, 8,192 batched tokens, drafter
+heads not in NVFP4, no clock reset, no weight snapshots. To go back: `./dsv41.sh stop`, `git checkout v2.0.0`, start
+from that tag's `.env.example`, run `./dsv41.sh build` if the nodes no longer hold `dsv41-1017-ds41f:r6v`, then
+`./dsv41.sh start`. That image does not use the weight snapshots; delete `CACHE_DIR/dsv41/weight-snapshots` to free
+the disk.
+
+**v1.0.0** is the previous engine of this recipe; its image is `dsv41-1017-spark:v1.0.0` on all four nodes. To go
+back: `./dsv41.sh stop`, `git checkout v1.0.0`, start from that tag's own `.env.example` (its keys differ) with
+`IMAGE=dsv41-1017-spark:v1.0.0`, then `./dsv41.sh start`. Its README and NOTICE describe and credit that engine.
 
 ## Credits
 
 **Engine**
 
-- [spark-ds41f](https://github.com/christopherowen/spark-ds41f) by **Christopher Owen**, Apache-2.0, release r6v at
-  `cbf47749`: the engine this recipe serves. His build preparation and image recipe build our image; his patch series
-  for vLLM (171 of 172 patches), B12X, TileLang, TileKernels and NCCL (three of four) carry the TileLang kernel
-  family, reference precision, batch invariance, the Engram reader and ring relay, the DSpark cost curves and
-  verification work, and kernel preparation; our defaults are his `tp4-ring` configuration, and the memory guard is
-  his `scripts/memguard*.sh`, run unmodified. His external site receipt showed that `tp4-ring` runs on a stock 4 KiB
+- [spark-ds41f](https://github.com/christopherowen/spark-ds41f) by **Christopher Owen**, Apache-2.0, release r6w at
+  `2dc95329`: the engine this recipe serves. His build preparation and image recipe build our image; his patch series
+  for vLLM (172 of 173 patches, among them r6w's 0181, the routed SwiGLU and MXFP8 cast over the live tiles), B12X,
+  TileLang, TileKernels and NCCL (three of four) carry the TileLang kernel family, reference precision, batch
+  invariance, the Engram reader and ring relay, the DSpark cost curves and verification work, the NVFP4 drafter
+  heads, and kernel preparation; our defaults start from his `tp4-ring` configuration, and the memory guard is his
+  `scripts/memguard*.sh`, run unmodified. His external site receipt showed that `tp4-ring` runs on a stock 4 KiB
   kernel. Also from his series: carlosmolina0615 (vLLM 0045, the CED decoder's MoE routed with its own padding mask
   in TileLang); issues reported by huxiaofengtiger (NVIDIA Developer Forums); a port of vllm-project/vllm#51694.
 - [vLLM](https://github.com/vllm-project/vllm) by the vLLM project, Apache-2.0: the engine, via
@@ -480,7 +593,7 @@ that engine.
   Apache-2.0: checkpoint loader, vision tower kernels, the alternative kernel backend, and the RoCEnante module
   sparknet's collectives derive from.
 - [TileLang](https://github.com/tile-ai/tilelang) by Tile-AI, MIT (with Apache TVM and CUTLASS as pinned
-  submodules): the kernel language of the r6v kernel family.
+  submodules): the kernel language of spark-ds41f's kernel family.
 - [TileKernels](https://github.com/deepseek-ai/TileKernels) by DeepSeek, MIT: MoE gate, SwiGLU and quantization
   casts, mHC.
 - [sparknet / dgx-spark-networking](https://github.com/christopherowen/dgx-spark-networking) by Christopher Owen,
@@ -497,7 +610,7 @@ that engine.
   License: the weights (downloaded by `fetch`, not in this repo or the image) and the reference encoder
   `encoding/encoding.py` that `parity` checks the server against.
 
-**Benchmarks and conventions**
+**Benchmarks, conventions and prior art**
 
 - [MiaAI-Lab/DeepSeek-v4.1-Flash-DGX-Sparks](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-DGX-Sparks):
   `scripts/qeval.py`, run as an external client in the qualification battery (not included). MiaAI-Lab's and
@@ -507,13 +620,16 @@ that engine.
   (`experiments/2026-10-12-r6g`), run as external clients (not included).
 - The ring container contract and choosing rails by subnet come from our keys-TensorFold-GLM-5.3-TP4-4x-DGX-Spark
   recipe, and knapcio's GLM-5.3-gr8-4x-DGX-Spark-TP4 recipe (MIT) for the 4-node ring conventions.
+- [kindlingai/glm-5.3-flash-gx10](https://github.com/kindlingai/glm-5.3-flash-gx10): prior art for quick boot from
+  per-rank processed-weight snapshots. It carries no license, so only the idea is used: `docker/0002-*.patch` is our
+  own implementation, no code taken.
 
 ## Licenses
 
 | Component | License | In this repo? |
 |---|---|---|
-| This repository's scripts, tests, bench client, docs and `docker/0001-*.patch` | Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)) | yes |
-| spark-ds41f (`cbf47749`): build preparation, image recipe, patch series, memory-guard scripts | Apache-2.0 | no: fetched at image build |
+| This repository's scripts, tests, bench client, docs, `docker/0001-*.patch` and `docker/0002-*.patch` | Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)) | yes |
+| spark-ds41f (`2dc95329`): build preparation, image recipe, patch series, memory-guard scripts | Apache-2.0 | no: fetched at image build |
 | vLLM: Local Inference Lab fork (`19f2c20`) and the vLLM nightly runtime image | Apache-2.0 | no: fetched / pulled at image build |
 | B12X (`236ddff`) | Apache-2.0 | no: fetched at image build |
 | TileLang (`b95ee4f`) with its submodules (Apache TVM, Apache-2.0; CUTLASS, BSD-3-Clause) | MIT (its LICENSE notes collaboration terms with Microsoft for 2024-12-01 to 2025-03-14) | no: fetched at image build |
