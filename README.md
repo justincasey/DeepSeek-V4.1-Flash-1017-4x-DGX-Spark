@@ -408,6 +408,20 @@ The qualification battery adds three external clients, not shipped here: MiaAI-L
 the salted cold needle (`needle_salted.py`) from spark-ds41f's external site receipt, and spark-ds41f's
 `token_determinism_text.py` (`experiments/2026-10-12-r6g`), so results compare with their records.
 
+`bench decode` sends one prompt per cell, the same body from every worker, so a c=8 cell is eight copies of one
+text: draft acceptance is tied to that text and the shared prefix hits the cache. To compare with spark-ds41f,
+`autoresearch.sh` measures with Christopher Owen's
+[servebench](bench/servebench/README.md) (spark-ds41f `2d2b2328`, vendored unmodified, pinned by
+[`bench/servebench.sha256`](bench/servebench.sha256)), run on the head node with its system `python3`: the suite
+[`bench/suites/dsv41-ladder.json`](bench/suites/dsv41-ladder.json) runs closed loops at 16, 8, 4, 2 and 1 streams
+over 256 distinct prompts (a fresh cache salt per request, exactly 256 output tokens, greedy, thinking off, 60 s
+warm-up, 300 s measured; his release suite's arguments), then cold real-text prefill at 32K-512K (his release
+sizes and seeds, without 1M; three repeats) and at 8K and 16K (six repeats). It reads the served
+`--max-num-batched-tokens`, long-prefill threshold and `DSV41_CED_SKIP_NONFINAL` from the head container and
+reports, per prefill size, the chunk count and the chunks docker/0005 skips (derived from the prompt length: a
+non-final chunk ends on a threshold multiple and at least 200 rows follow it at k=6). `EXTRA_DOCKER_ARGS="-e
+DSV41_CED_SKIP_NONFINAL=0"` turns the skip off.
+
 ### Current defaults against r6v
 
 Measured on 2026-10-18 at the 2,200 MHz clock lock with the same client and settings as the r6v record

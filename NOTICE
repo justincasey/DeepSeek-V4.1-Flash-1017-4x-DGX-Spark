@@ -72,4 +72,9 @@ vLLM project); 0005 and 0006 change Local Inference Lab's and Christopher Owen's
 after the bounded decoder replay idea of vllm-project/vllm#58132 (ivanium) and #59894 (gcanlin), porting no
 upstream code.
 
+bench/servebench/ is redistributed: servebench by Christopher Owen, from spark-ds41f
+(https://github.com/christopherowen/spark-ds41f, Apache-2.0) at commit 2d2b2328a92a9dca9a73ce7acd56e188741f30a8,
+copied unmodified (sha256 of every file in bench/servebench.sha256). bench/suites/dsv41-ladder.json is ours and
+uses his suite format and his release suite's step arguments.
+
 Full credits, including prior art used as inspiration only: README.md, section "Credits".

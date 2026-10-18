@@ -1,0 +1,85 @@
+{
+ "name": "release-tp3",
+ "version": 1,
+ "description": "Release measurement for three nodes (8 streams, 512K context), about 51 minutes a build: model behaviour on all 256 prompts at eight streams, the engine grid up to eight requests, eight and four streams in a closed loop, Poisson arrivals at 0.42 requests/s (about 80% of eight streams' rate on r6h) with goodput under a 2 s time to first token and 100 ms per output token, and real-text prefill from 32K to 500K. Its grid needs the dev-mode collective RPC.",
+ "steps": [
+  {
+   "id": "model",
+   "command": "model",
+   "args": {
+    "concurrency": 8,
+    "max_tokens": 256,
+    "top": 20
+   }
+  },
+  {
+   "id": "grid",
+   "command": "engine",
+   "args": {
+    "replays": 100,
+    "settle": 1,
+    "max_requests": 8
+   }
+  },
+  {
+   "id": "c8",
+   "command": "run",
+   "args": {
+    "mode": "closed",
+    "concurrency": 8,
+    "warmup": 60,
+    "duration": 300,
+    "extra_body": {
+     "chat_template_kwargs": {
+      "thinking": false
+     }
+    }
+   }
+  },
+  {
+   "id": "c4",
+   "command": "run",
+   "args": {
+    "mode": "closed",
+    "concurrency": 4,
+    "warmup": 60,
+    "duration": 300,
+    "extra_body": {
+     "chat_template_kwargs": {
+      "thinking": false
+     }
+    }
+   }
+  },
+  {
+   "id": "poisson",
+   "command": "run",
+   "args": {
+    "mode": "poisson",
+    "rate": 0.42,
+    "warmup": 60,
+    "duration": 300,
+    "slo_ttft": 2,
+    "slo_tpot": 100,
+    "extra_body": {
+     "chat_template_kwargs": {
+      "thinking": false
+     }
+    }
+   }
+  },
+  {
+   "id": "prefill",
+   "command": "prefill",
+   "args": {
+    "sizes": [
+     32768,
+     131072,
+     262144,
+     500000
+    ],
+    "repeats": 3
+   }
+  }
+ ]
+}
