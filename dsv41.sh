@@ -14,7 +14,7 @@
 #   build                build the serving image on rank 0, ship it over the ring, verify the image ID everywhere
 #   start                arm a memory guard and start each rank (workers first), wait for the API, switch the
 #                        guards to steady, run smoke
-#   stop | restart | status | smoke
+#   stop | restart | status | smoke   (stop and restart first save the prefix KV cache when KV_PERSIST=1)
 #   logs [rank] [lines]  tail one rank's engine log (default rank 0, 200 lines)
 #   api-test [args]      full API conformance suite against the live endpoint (tests/api_conformance.py)
 #   parity               server prompt rendering == publisher encoding.py (tests/test_encoding_parity.py)
@@ -92,6 +92,9 @@ unset _CALLER _k _v _line
 : "${GPU_CLOCKS:=2200}"                  # site policy: lock every node's GPU at this MHz at start (nvidia-smi -lgc N,N) | keep
 : "${WEIGHT_SNAPSHOT:=1}"                # 1 = per-rank loaded-weight snapshots under CACHE_DIR (docker/0002): later boots
                                          #     read one file at NVMe speed instead of the checkpoint | 0 = always the checkpoint
+: "${KV_PERSIST:=0}"                     # 1 = the prefix KV cache survives stop/restart (docker/0008): stop saves it
+                                         #     (~10.5 GiB per node under CACHE_DIR), start restores it | 0 = cold cache
+: "${KV_SAVE_TIMEOUT:=120}"              # seconds stop waits for the KV snapshot save before stopping anyway
 : "${STARTUP_MEMGUARD_GIB:=5}"
 : "${STARTUP_MEMGUARD_INTERVAL:=0.25}"
 : "${STARTUP_MEMGUARD_WAIT:=120}"
@@ -377,6 +380,7 @@ profile_env() {
     SPARK3_DSPARK_VOCAB_PARALLEL=1
     "SPARK3_DISPLAY_CARVEOUT_WEIGHTS=$(is_true "$DISPLAY_CARVEOUT" && echo 1 || echo 0)"
     "DSV41_WEIGHT_SNAPSHOT=$(is_true "$WEIGHT_SNAPSHOT" && echo 1 || echo 0)"
+    "DSV41_KV_PERSIST=$(is_true "$KV_PERSIST" && echo 1 || echo 0)"
     # vLLM
     # Drafter heads in NVFP4 (draft vocab head and Markov head): only the proposals change, every committed token
     # is still the target's; measured +1.3% c=1 decode on this ring (spark-ds41f's TP4 run: c1 level, c8 +3.5%).
@@ -636,7 +640,24 @@ ship_image() {   # ship_image FROM TO: stream the image across the cable between
 
 drop_caches() { every 'sync; sudo -n sysctl -q -w vm.drop_caches=$LEVEL 2>/dev/null || true' LEVEL="${1:-3}"; }
 
+# kv_save: with KV_PERSIST=1, ask the engine to write its prefix cache (docker/0008: every rank's KV buffer plus
+# the scheduler's table under CACHE_DIR/dsv41/kv-snapshots) before the ranks go down, so the next start restores
+# it. abort=true: requests still running are aborted first (the stop would end them anyway). Skipped when the API
+# does not answer; a failed or timed-out save is logged and never blocks the stop.
+kv_save() {
+  is_true "$KV_PERSIST" || return 0
+  [[ $KV_SAVE_TIMEOUT =~ ^[1-9][0-9]*$ ]] || { log "WARN: KV_SAVE_TIMEOUT must be a positive integer; KV snapshot not saved"; return 0; }
+  curl -sf -m 2 "$URL/health" >/dev/null 2>&1 || return 0
+  local out code t0=$SECONDS
+  out=$(curl -sS -m "$KV_SAVE_TIMEOUT" -X POST -H @<(auth_header) -w '\n%{http_code}' \
+    "$URL/v1/dsv41/kv_snapshot?abort=true" 2>&1) || true
+  code=${out##*$'\n'}
+  if [[ $code == 200 ]]; then log "KV snapshot saved in $((SECONDS - t0))s: ${out%$'\n'*}"
+  else log "WARN: KV snapshot not saved after $((SECONDS - t0))s ($(tr '\n' ' ' <<<"$out")); stopping anyway"; fi
+  return 0
+}
 cmd_stop() {
+  kv_save
   every 'sudo -n systemctl stop "$UNIT" >/dev/null 2>&1 || true
          if docker ps -a --format "{{.Names}}" | grep -qx "$C"; then
            docker stop -t "$G" "$C" >/dev/null 2>&1 || true

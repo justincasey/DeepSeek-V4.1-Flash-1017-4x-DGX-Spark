@@ -120,7 +120,7 @@ default ([Configuration](#configuration)). Then:
 ./dsv41.sh status       # containers, memory guard state, available memory, /v1/models
 ./dsv41.sh logs 0 200   # tail one rank's engine log
 ./dsv41.sh bench decode # benchmarks (bench/bench.py; results in bench/runs/)
-./dsv41.sh stop         # stops the guards and all ranks (STOP_GRACE s, then SIGKILL); each log is kept as ~/$CONTAINER.prev.log
+./dsv41.sh stop         # with KV_PERSIST=1 saves the prefix KV cache first; stops the guards and all ranks (STOP_GRACE s, then SIGKILL); each log is kept as ~/$CONTAINER.prev.log
 ./dsv41.sh restart
 ./dsv41.sh print-serve 0   # the exact guard arm + docker run + vllm serve for one rank, no side effects
 ```
@@ -279,7 +279,7 @@ key; the groups:
 | Serving | `SERVED_NAME`, `HOST`, `PORT`, `API_KEY` | `deepseek-v4.1-flash` on `0.0.0.0:8000`; `API_KEY` empty = no authentication |
 | Sizing | `MAX_MODEL_LEN`, `MAX_NUM_SEQS`, `MAX_NUM_BATCHED_TOKENS`, `GPU_MEMORY_UTILIZATION`, `KV_CACHE_MEMORY_BYTES` | 1,048,576 tokens, 16 sequences, 16,384 tokens per step (the long-prefill threshold is this minus the decode rows, `MAX_NUM_SEQS` × (k+1): 16,288 at the defaults); a fixed 10.5 GiB KV budget per rank (`11274289152`; empty = vLLM profiling); utilization 0.82 is always passed and then only gates vLLM's startup free-memory check |
 | Engine | `PREFIX_CACHING`, `PREFIX_CACHE_RETENTION_INTERVAL`, `KERNEL_BACKEND`, `GENERATION_DEFAULTS`, `TEXT_ONLY`, `MAX_IMAGES` | prefix caching on with retention interval 8192; `tilelang` (the TileLang SM121 family) or `b12x` (spark-ds41f's pre-r6 backend, in the same image); `{"temperature":1.0,"top_p":1.0}`; images on, 4 per prompt |
-| Boot and stop | `WEIGHT_SNAPSHOT`, `WAIT_TIMEOUT`, `STOP_GRACE` | weight snapshots on: each rank snapshots its loaded weights on the first boot of a build and configuration and restores them on later boots (`0` = always read the checkpoint; [Quick boot](#quick-boot)); `start` waits up to 3600 s; `stop` gives vLLM 5 s to exit before SIGKILL (its graceful exit took ~14 s; nothing survives a stop either way) |
+| Boot and stop | `WEIGHT_SNAPSHOT`, `KV_PERSIST`, `KV_SAVE_TIMEOUT`, `WAIT_TIMEOUT`, `STOP_GRACE` | weight snapshots on: each rank snapshots its loaded weights on the first boot of a build and configuration and restores them on later boots (`0` = always read the checkpoint; [Quick boot](#quick-boot)); persistent prefix cache off (`1` = `stop`/`restart` save the prefix KV cache, waiting up to 120 s, and `start` restores it; [Persistent prefix cache](#persistent-prefix-cache)); `start` waits up to 3600 s; `stop` gives vLLM 5 s to exit before SIGKILL (its graceful exit took ~14 s) |
 | DSpark and CUDA graphs | `DSPARK`, `NUM_SPECULATIVE_TOKENS`, `DRAFT_SAMPLE_METHOD`, `ADAPTIVE_VERIFICATION_COST_SCALE`, `DSPARK_COST_DIR`, `EAGER`, `COMPILATION_CONFIG` | DSpark on (the drafter ships in the checkpoint), k=5, greedy drafts, block verification, adaptive verification at cost scale 2.0 (empty = off); cost curves in one directory per build (`off` or a `/cache/...` path to override); `FULL_AND_PIECEWISE` graphs on spark-ds41f's capture ladder up to `MAX_NUM_SEQS` × (k+1) rows (96 at the defaults); `EAGER=1` disables graphs; `COMPILATION_CONFIG` replaces the compilation JSON verbatim |
 | Host resources | `CPUSET`, `CONTAINER_MEMORY`, `DRI_CARD`, `DISPLAY_CARVEOUT`, `GPU_CLOCKS` | ranks pinned to GB10's ten Cortex-X925 cores `5-9,15-19` (`doctor` checks them per node); `--memory`/`--memory-swap` 112g; the nvidia DRM card bound at `/dev/dri/card0`; embedding and head in the display carve-out off (`1` needs `DRI_CARD` and `nvidia-drm` modeset); empty disables each of these. `GPU_CLOCKS=reset` runs `nvidia-smi -rgc` on every node at `start` (a leftover clock lock held these GB10s at 2,184 MHz under load; unlocked they run at 2,470-2,502 MHz); `keep` leaves the clocks as they are |
 | Memory guard | `STARTUP_MEMGUARD_GIB`, `STARTUP_MEMGUARD_INTERVAL`, `STARTUP_MEMGUARD_WAIT`, `MEMGUARD_GIB`, `MEMGUARD_INTERVAL` | 5 GiB sampled every 0.25 s while loading (waits up to 120 s for its container); 3 GiB every 2 s once the API answers. The startup threshold must exceed the steady one ([Known limits](#known-limits)) |
@@ -295,7 +295,7 @@ key; the groups:
 |---|---|
 | Model | DeepSeek-V4.1-Flash-1017, native checkpoint (MXFP4 routed experts, FP8 dense, BF16 drafter head), revision `1bae0e1`, every file pinned by sha256 in `config/`; every node keeps a full local copy |
 | Engine | spark-ds41f r6w by Christopher Owen: Local Inference Lab's vLLM `integration/karmic-kraken-beta` at `19f2c20` + his r6w vLLM series (173 patches: r6v's 172 plus 0181, the routed SwiGLU and MXFP8 cast over the live tiles); B12X `236ddff` + 11 patches (checkpoint loader, vision tower kernels, the alternative kernel backend); TileLang 0.1.15 `b95ee4f` + 4 patches (among them SM12x block-scaled MMA); DeepSeek TileKernels 2.0.0 `66258df` + 1 patch; sparknet 0.3.0 `3bc8d10`; NCCL 2.30.7 rebuilt for SM121 + 4 patches (the IB send-path fence NVIDIA/nccl#2393, bidirectional switchless rings, balanced channels, adaptive small-ring threads); runtime base the vLLM nightly image `af1c014` (CUDA 13.0.2), pinned by digest |
-| Our patches | `docker/0001-*.patch`: `reasoning_effort` `minimal` → 50 and `medium` → 75, which the fork rejected with a 400; `docker/0002-*.patch`: per-rank snapshots of the loaded weights, restored on later boots ([Quick boot](#quick-boot)) |
+| Our patches | `docker/0001-*.patch`: `reasoning_effort` `minimal` → 50 and `medium` → 75, which the fork rejected with a 400; `docker/0002-*.patch`: per-rank snapshots of the loaded weights, restored on later boots ([Quick boot](#quick-boot)); `docker/0008-*.patch`: the prefix KV cache saved before a stop and restored at start ([Persistent prefix cache](#persistent-prefix-cache)) |
 | Kernels | the TileLang SM121 family (sparse MLA, MXFP4 indexer, FP8 and BF16 projections, FP8 × FP4 routed experts, vocabulary heads, RoPE, compressor, KV writers, Engram gate/hash/gather, WO), DeepSeek's TileKernels for the MoE gate, SwiGLU/quant casts and mHC, L2 weight prefetch during decode (`KERNEL_BACKEND=tilelang`) |
 | Precision | spark-ds41f follows DeepSeek's reference `inference/model.py`: FP32 logits from an exact packed BF16 head, FP32 mHC projection, shared-expert SwiGLU in FP32, MoE partials rounded once per rank, WO-A input through `act_quant`; batch-invariant reductions and rank-ordered collectives (his description; [Credits](#credits)) |
 | Engram | tables read from local disk by a native io_uring row reader (`--engram-config` `table_memory: disk`), projections sharded over TP, sequence-parallel row exchange relayed on the ring |
@@ -350,6 +350,37 @@ With the controller changes (memory guard reused when its pinned checksums match
 CRC32 digests of the processed model, to compare a restored boot with a checkpoint boot). The idea of per-rank
 weight snapshots comes from [kindlingai/glm-5.3-flash-gx10](https://github.com/kindlingai/glm-5.3-flash-gx10)'s
 processed-weight snapshots; the implementation is ours, no code taken ([Credits](#credits)).
+
+### Persistent prefix cache
+
+A restart used to drop the prefix cache: the first request for a long prompt after it paid the full prefill again
+(minutes at 128K tokens). With `KV_PERSIST=1` (the engine sees `DSV41_KV_PERSIST=1` on every rank), our
+`docker/0008-*.patch` keeps it across `stop`/`restart`:
+
+- **Save**: `stop` (and so `restart`) first sends `POST /v1/dsv41/kv_snapshot?abort=true` (under `/v1`, so
+  `API_KEY` guards it) and waits up to `KV_SAVE_TIMEOUT` (120 s). The engine pauses its scheduler, aborting any
+  running request, waits until no step is in flight, and every rank writes its whole KV backing buffer (10.5 GiB,
+  O_DIRECT, a CRC32 per 64 MiB chunk) under `CACHE_DIR/dsv41/kv-snapshots`; the scheduler's prefix-cache table
+  (block hashes, the hash map, the eviction order) is written last, only if every rank succeeded. If the save
+  fails or times out, `stop` logs it and stops anyway. An empty cache saves nothing.
+- **Restore**: at the next start, after warmup and before the API answers, every rank checks its snapshot and
+  reads it back, and the table is installed only if every rank succeeded, so the same prompt is a prefix hit at
+  the same block ids, byte for byte the cache the engine held before the stop. Otherwise the engine starts with an
+  empty cache and logs why (`KV snapshot not restored (...)`, naming the key factors that changed).
+- **Invalidation**: the key covers the checkpoint files, the vLLM, B12X and TileLang sources, Torch, the device,
+  Python and the block hash function, vLLM's config hash and HF config, the cache and KV cache configuration
+  (block sizes, groups, number of blocks, layout), the parallel layout, the engine environment and
+  `DSV41_KV_PERSIST_TAG`. A rebuilt image or any changed flag starts cold and the next stop writes a new snapshot,
+  replacing the old (one kept per node). A snapshot that fails a check (marker, size, CRC32, table consistency)
+  is deleted; a rank whose snapshot is from another save, or any other mismatch, leaves every rank cold.
+- **Limits**: only a graceful `stop`/`restart` saves; a crash or a guard kill starts cold, or from the last save if
+  nothing has changed since (its blocks are still valid for the same key). Restored blocks hold prompt contents:
+  files are owner-only, and `DSV41_KV_PERSIST_TAG` or deleting the directory discards them.
+
+The patch's own knobs, set with `EXTRA_DOCKER_ARGS` (`-e K=V`): `DSV41_KV_PERSIST_DIR` (default
+`/cache/dsv41/kv-snapshots`), `DSV41_KV_PERSIST_TAG`, `DSV41_KV_PERSIST_KEEP` (default 1) and
+`DSV41_KV_PERSIST_VERIFY` (`0` skips the CRC32 check on restore). The weight snapshot key leaves the
+`DSV41_KV_PERSIST*` switches out, so turning this on keeps the weight snapshots.
 
 ## Benchmarks
 
@@ -547,6 +578,11 @@ Their numbers, from their harnesses and sites, not measured here and not directl
   the old (one kept per rank). A rank whose cache filesystem cannot hold the snapshot with 4 GiB to spare skips the
   write, and every rank then keeps loading the checkpoint. `WEIGHT_SNAPSHOT=0` turns snapshots off; delete the
   directory to reclaim the space.
+- **KV snapshots use disk and stop time.** With `KV_PERSIST=1` each node keeps ~10.5 GiB (its rank's KV buffer) plus
+  the head's table (a few MB) under `CACHE_DIR/dsv41/kv-snapshots`, rewritten at every `stop`; a node that cannot
+  hold it with 4 GiB to spare fails the save (logged; the next start is cold). Each save adds the write time of
+  10.5 GiB per node to `stop` and each restore its read time to `start` [INFERENCE: a few seconds each at NVMe
+  speed; to be measured]. `KV_PERSIST=0` turns it off; delete the directory to reclaim the space.
 - **The memory guard kills, by design.** A guard SIGKILLs its rank when MemAvailable drops below its threshold
   (5 GiB while loading, 3 GiB serving) or when the container can no longer be inspected. TP4 cannot continue on three
   ranks, so a kill stops the service: read `./dsv41.sh logs` and the guard journal (`journalctl -t spark-memguard`),

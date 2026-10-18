@@ -216,6 +216,23 @@ for want in 1 0; do
   [[ $vals == "$want $want $want $want " ]] && ok "DSV41_WEIGHT_SNAPSHOT=$want on every rank" || bad "DSV41_WEIGHT_SNAPSHOT per rank: $vals(want $want)"
 done
 
+# KV snapshots: every rank must get the same switch (the engine core installs the restored prefix table only if
+# every rank restored its buffer, and saves through every rank), off by default and on with KV_PERSIST=1; stop
+# (and so restart) asks the engine to save before any rank goes down, guarded by the API key, with a timeout
+for want in 0 1; do
+  vals=""
+  for r in 0 1 2 3; do
+    c=$(cd "$tmp" && env -i PATH="$PATH" HOME="$HOME" $([[ $want == 1 ]] && echo KV_PERSIST=1) ./dsv41.sh print-serve "$r" | sed -n 2p)
+    vals+="$(envval "$c" DSV41_KV_PERSIST) "
+  done
+  [[ $vals == "$want $want $want $want " ]] && ok "DSV41_KV_PERSIST=$want on every rank" || bad "DSV41_KV_PERSIST per rank: $vals(want $want)"
+done
+stop=$(sed -n '/^cmd_stop() {$/,/^}$/p' dsv41.sh); save=$(sed -n '/^kv_save() {$/,/^}$/p' dsv41.sh)
+[[ $(sed -n 2p <<<"$stop") == "  kv_save" ]] && has "$save" 'is_true "$KV_PERSIST" || return 0' \
+  && has "$save" '-m "$KV_SAVE_TIMEOUT"' && has "$save" '-H @<(auth_header)' && has "$save" '/v1/dsv41/kv_snapshot?abort=true' \
+  && has "$save" 'return 0' && ok "stop saves the KV snapshot first (KV_PERSIST=1, timeout, API key, never fails the stop)" \
+  || bad "kv_save / cmd_stop wiring"
+
 # pinned memory-guard scripts: the copy start installs must be spark-ds41f's own at the pinned commit
 grep -q '^GUARD_REV=2dc95329610188451a5c5f5af98e5c392144809c$' dsv41.sh && ok "memory guard pinned to spark-ds41f@2dc95329" \
   || bad "GUARD_REV pin"
