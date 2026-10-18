@@ -70,7 +70,7 @@ unset _CALLER _k _v _line
 : "${MASTER_PORT:=9999}"
 : "${MAX_MODEL_LEN:=1048576}"
 : "${MAX_NUM_SEQS:=16}"
-: "${MAX_NUM_BATCHED_TOKENS:=16384}"
+: "${MAX_NUM_BATCHED_TOKENS:=24576}"
 : "${KV_CACHE_MEMORY_BYTES=11274289152}"   # 10.5 GiB per rank; set empty to profile
 : "${GPU_MEMORY_UTILIZATION:=0.82}"
 : "${PREFIX_CACHING:=1}"
