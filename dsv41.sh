@@ -92,7 +92,7 @@ unset _CALLER _k _v _line
 : "${GPU_CLOCKS:=2200}"                  # site policy: lock every node's GPU at this MHz at start (nvidia-smi -lgc N,N) | keep
 : "${WEIGHT_SNAPSHOT:=1}"                # 1 = per-rank loaded-weight snapshots under CACHE_DIR (docker/0002): later boots
                                          #     read one file at NVMe speed instead of the checkpoint | 0 = always the checkpoint
-: "${KV_PERSIST:=0}"                     # 1 = the prefix KV cache survives stop/restart (docker/0008): stop saves it
+: "${KV_PERSIST:=1}"                     # 1 = the prefix KV cache survives stop/restart (docker/0008): stop saves it
                                          #     (~10.5 GiB per node under CACHE_DIR), start restores it | 0 = cold cache
 : "${KV_SAVE_TIMEOUT:=120}"              # seconds stop waits for the KV snapshot save before stopping anyway
 : "${STARTUP_MEMGUARD_GIB:=5}"
