@@ -79,7 +79,7 @@ unset _CALLER _k _v _line
 : "${DSPARK:=1}"
 : "${NUM_SPECULATIVE_TOKENS:=6}"
 : "${DRAFT_SAMPLE_METHOD:=greedy}"
-: "${ADAPTIVE_VERIFICATION_COST_SCALE=2.0}"   # empty = no adaptive verification
+: "${ADAPTIVE_VERIFICATION_COST_SCALE=1.0}"   # empty = no adaptive verification
 : "${DSPARK_COST_DIR:=}"                 # empty = one per build under /cache | off | absolute path under /cache
 : "${EAGER:=0}"
 : "${COMPILATION_CONFIG:=}"
