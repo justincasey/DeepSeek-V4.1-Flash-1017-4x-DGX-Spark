@@ -39,6 +39,12 @@ boot_s=$((SECONDS - t))
 engine_up_s=$(grep -o 'up after [0-9]*s' "$RUN/restart.log" | grep -o '[0-9]*' | tail -1)
 grep -q 'smoke: OK' "$RUN/restart.log" || { tail -20 "$RUN/restart.log"; echo "smoke failed" >&2; exit 1; }
 
+# Warm-up, discarded: the first minutes after a boot decode ~1-2.5% slower than the rest of the boot (measured:
+# +2.95% first pass vs +4.01/+4.07/+4.03% on three later passes of one boot), which is noise for these A/Bs.
+./dsv41.sh bench decode --conc 1 --seconds 20 --out "$RUN/warmup-decode" > "$RUN/warmup.log" 2>&1 \
+  && ./dsv41.sh bench prefill --lengths 32k --out "$RUN/warmup-prefill" >> "$RUN/warmup.log" 2>&1 \
+  || { tail -30 "$RUN/warmup.log"; echo "warm-up failed" >&2; exit 1; }
+
 ./dsv41.sh bench decode --conc 1,8 --seconds 30 --out "$RUN/decode" > "$RUN/decode.log" 2>&1 \
   || { tail -30 "$RUN/decode.log"; echo "decode bench failed" >&2; exit 1; }
 ./dsv41.sh bench prefill --lengths 32k,128k,512k --out "$RUN/prefill" > "$RUN/prefill.log" 2>&1 \
