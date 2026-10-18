@@ -99,6 +99,7 @@ unset _CALLER _k _v _line
 : "${EXTRA_VLLM_ARGS:=}"
 : "${EXTRA_DOCKER_ARGS:=}"
 : "${WAIT_TIMEOUT:=3600}"
+: "${STOP_GRACE:=5}"                     # seconds docker stop waits for vLLM's graceful exit before SIGKILL
 : "${STOP_OTHER:=}"
 : "${RESTORE_OTHER:=}"
 : "${ALLOWED_CONTAINERS:=}"            # other containers that may keep running alongside the ranks (space separated)
@@ -656,10 +657,10 @@ drop_caches() { every 'sync; sudo -n sysctl -q -w vm.drop_caches=$LEVEL 2>/dev/n
 cmd_stop() {
   every 'sudo -n systemctl stop "$UNIT" >/dev/null 2>&1 || true
          if docker ps -a --format "{{.Names}}" | grep -qx "$C"; then
-           docker stop -t 60 "$C" >/dev/null 2>&1 || true
+           docker stop -t "$G" "$C" >/dev/null 2>&1 || true
            docker logs "$C" > "$HOME/$C.prev.log" 2>&1 || true
            docker rm -f "$C" >/dev/null; echo stopped
-         else echo "not running"; fi' C="$CONTAINER" UNIT="$GUARD_UNIT"
+         else echo "not running"; fi' C="$CONTAINER" UNIT="$GUARD_UNIT" G="$STOP_GRACE"
 }
 
 # ── memory guard ───────────────────────────────────────────────────────────────────────────────
@@ -689,11 +690,15 @@ guard_cmd() {
   esac
 }
 # install_guards: copy spark-ds41f's scripts/ out of the image on every node (docker create + cp, nothing runs) and
-# refuse it unless memguard.sh and memguard-start.sh are byte-identical to the pinned commit.
+# refuse it unless memguard.sh and memguard-start.sh are byte-identical to the pinned commit. A node whose installed
+# copy already matches the pinned sums keeps it (the content is what is pinned, not the image it came from).
 install_guards() {
   every '
     sudo -n true 2>/dev/null || { echo "no passwordless sudo: the memory guard cannot run"; exit 1; }
     G=$HOME/.local/lib/$C-memguard
+    if [ -d "$G/scripts" ] && (cd "$G/scripts" && printf "%s\n" "$SUMS" | sha256sum --check --status); then
+      echo "memory guard: spark-ds41f@$REV (installed)"; exit 0
+    fi
     rm -rf "$G.new"; mkdir -p "$G.new"
     id=$(docker create "$IMAGE")
     if docker cp "$id:$SRC" "$G.new/scripts" >/dev/null 2>&1; then ok=1; else ok=0; fi
@@ -726,14 +731,21 @@ cmd_start() {
   elif [[ $GPU_CLOCKS != keep ]]; then die "GPU_CLOCKS must be reset or keep (got '$GPU_CLOCKS')"; fi
   out=$(every 'mkdir -p "$D"' D="$CACHE_DIR" 2>&1) || die "cannot create $CACHE_DIR:"$'\n'"$out"
   out=$(install_guards 2>&1) || die "memory guard install failed:"$'\n'"$out"
-  for r in 3 2 1 0; do
-    # The key rides the prelude (ssh stdin); docker_args names it for rank 0 only.
-    remote "$r" "$guard"$'\n'"docker ${cmd[$r]} >/dev/null || { sudo -n systemctl stop \"\$UNIT\" >/dev/null 2>&1 || true; exit 1; }" \
-      UNIT="$GUARD_UNIT" VLLM_API_KEY="$API_KEY" || { cmd_stop >/dev/null 2>&1; die "guarded docker run failed on rank $r"; }
-    log "rank $r started on ${NODE[$r]} under its startup memory guard"
-  done
+  log "prepared: stopped, caches dropped, clocks, guards"
+  # Workers start together, the head last (spark-ds41f's deployment order: the head's rendezvous finds them up).
+  launch_rank() {
+    remote "$1" "$guard"$'\n'"docker ${cmd[$1]} >/dev/null || { sudo -n systemctl stop \"\$UNIT\" >/dev/null 2>&1 || true; exit 1; }" \
+      UNIT="$GUARD_UNIT" VLLM_API_KEY="$API_KEY"
+  }
+  local -a lp=(); local failed=""
+  for r in 3 2 1; do launch_rank "$r" & lp+=($!); done
+  for r in 3 2 1; do wait "${lp[$((3 - r))]}" || failed+=" $r"; done
+  [[ -z $failed ]] || { cmd_stop >/dev/null 2>&1; die "guarded docker run failed on rank(s)$failed"; }
+  log "ranks 3 2 1 started under their startup memory guards"
+  launch_rank 0 || { cmd_stop >/dev/null 2>&1; die "guarded docker run failed on rank 0"; }
+  log "rank 0 started on ${NODE[0]} under its startup memory guard"
   log "waiting for $URL (up to ${WAIT_TIMEOUT}s; first boot prepares the TileLang kernels into $CACHE_DIR)"
-  local t0=$SECONDS dead
+  local t0=$SECONDS dead last=$SECONDS
   while (( SECONDS - t0 < WAIT_TIMEOUT )); do
     if curl -sf -m 5 "$URL/health" >/dev/null; then
       log "up after $((SECONDS - t0))s: $URL/v1"
@@ -741,15 +753,19 @@ cmd_start() {
       echo "$out"
       cmd_smoke; return
     fi
-    dead=$(every 'docker ps --format "{{.Names}}" | grep -qx "$C" || echo DEAD; systemctl is-active --quiet "$UNIT" || echo UNGUARDED' \
-      C="$CONTAINER" UNIT="$GUARD_UNIT" | grep -E 'DEAD|UNGUARDED' || true)
-    if [[ -n $dead ]]; then
-      echo "$dead"
-      for r in 0 1 2 3; do echo "── rank $r"; remote "$r" 'docker logs --tail 40 "$C" 2>&1 || tail -40 "$HOME/$C.prev.log"; journalctl -t spark-memguard --since "-15min" --no-pager 2>/dev/null | tail -5 || true' C="$CONTAINER" || true; done
-      cmd_stop >/dev/null 2>&1 || true; die "a rank exited or lost its memory guard during startup"
+    # Health is polled every second; the liveness check and the page-cache drop keep their 10 s cadence.
+    if (( SECONDS - last >= 10 )); then
+      last=$SECONDS
+      dead=$(every 'docker ps --format "{{.Names}}" | grep -qx "$C" || echo DEAD; systemctl is-active --quiet "$UNIT" || echo UNGUARDED' \
+        C="$CONTAINER" UNIT="$GUARD_UNIT" | grep -E 'DEAD|UNGUARDED' || true)
+      if [[ -n $dead ]]; then
+        echo "$dead"
+        for r in 0 1 2 3; do echo "── rank $r"; remote "$r" 'docker logs --tail 40 "$C" 2>&1 || tail -40 "$HOME/$C.prev.log"; journalctl -t spark-memguard --since "-15min" --no-pager 2>/dev/null | tail -5 || true' C="$CONTAINER" || true; done
+        cmd_stop >/dev/null 2>&1 || true; die "a rank exited or lost its memory guard during startup"
+      fi
+      drop_caches 1 >/dev/null || log "WARN: drop_caches failed on a rank"
     fi
-    drop_caches 1 >/dev/null || log "WARN: drop_caches failed on a rank"
-    sleep 10
+    sleep 1
   done
   die "API not up after ${WAIT_TIMEOUT}s (./dsv41.sh logs)"
 }
