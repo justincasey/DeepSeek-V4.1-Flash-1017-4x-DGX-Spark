@@ -3,7 +3,7 @@
 #
 # DeepSeek-V4.1-Flash-1017 on four DGX Sparks: Christopher Owen's spark-ds41f engine, release r6w
 # (experiments/2026-10-18-r6w-swiglu: r6v plus vLLM 0181, the routed SwiGLU and MXFP8 cast over the live
-# tiles), rebuilt from scratch, plus two patches of ours on top.
+# tiles), rebuilt from scratch, plus two patches of ours and his scale-codes overlay on top.
 #
 #   docker build -f docker/Dockerfile -t dsv41-1017-ds41f:r6w .     (context: the repository root; only
 #                                                                    docker/ is read; linux/arm64 only)
@@ -20,9 +20,9 @@
 # The build stages after `fetch` are spark-ds41f's docker/Dockerfile at that commit (Apache-2.0,
 # Copyright Christopher Owen), with his named build contexts replaced by `fetch`'s exports and his
 # build-time checks kept verbatim. Our additions: the `dsv41-vllm` stage (our patches, docker/0001-*.patch
-# reasoning-effort aliases and docker/0002-*.patch per-rank weight snapshots, on top of his vLLM series), and
-# the final `dsv41` stage (the TileLang SM12x block-scaled MMA check, his memguard scripts and GPU smoke
-# script, checks of our patches, our labels).
+# reasoning-effort aliases and docker/0002-*.patch per-rank weight snapshots, on top of his vLLM series, then
+# his scale-codes overlay as one commit), and the final `dsv41` stage (the TileLang SM12x block-scaled MMA
+# check, his memguard scripts and GPU smoke script, checks of our patches and the overlay, our labels).
 #
 # Resource use (spark-ds41f's build policy): needs ~64 GiB MemAvailable to start; VLLM_COMPILE_JOBS x
 # VLLM_NVCC_THREADS sized at 8 GiB per job. Build on an idle node.
@@ -97,8 +97,19 @@ ARG CUTLASS_RELEASE_TAG=v4.7.1
 # Ours, applied in this order after his vLLM series (Apache-2.0, this repository). docker/ must hold exactly
 # these patches.
 ARG DSV41_VLLM_PATCHES="0001-deepseek-v41-reasoning-effort-minimal-medium.patch 0002-model-loader-weight-snapshots.patch"
-ARG DSV41_VLLM_PATCH_HEAD=d1c0123ad6e37fe5fdb23c7b6570542928b0c279
-ARG DSV41_VLLM_TREE=543ca085a63bb46312f8c1d5db5a006920e9bc36
+
+# Then Christopher Owen's lossless MoE scale-codes overlay (spark-ds41f experiments/2026-10-18-scale-codes,
+# Apache-2.0): the routed experts' UE8M0 scales kept as a base exponent per row and 4-bit codes, which the
+# grouped GEMMs expand into the same scale words (outputs bit-identical to r6w's). Three whole files over
+# r6w's (r6v with 0181), at the newest commit touching overlay/, each pinned by sha256, committed with a
+# fixed author, committer and date; DSV41_VLLM_PATCH_HEAD/TREE are the head and tree after that commit.
+ARG SCALE_CODES_REVISION=a250ace70424475c04b0919fc9a46f23c19e51da
+ARG SCALE_CODES_OVERLAY=experiments/2026-10-18-scale-codes/overlay
+ARG SCALE_CODES_FUSED_MOE_TILELANG_SHA256=fdb6f54d02859e7d7e1aee5fb9f73c5f0a2a9ac26ded4044911b8f10e5b25ddb
+ARG SCALE_CODES_TILELANG_GEMM_SHA256=1b6b2c878fb79293d3cce291a27002d6d966718218d69a7461bf99a38a38556c
+ARG SCALE_CODES_TILELANG_MOE_SHA256=b446d2fe12bc6c6785f8593148c21fb7036369e749488437f90f335b1f78bf6d
+ARG DSV41_VLLM_PATCH_HEAD=2847b6a14d611fbffdb43b9456288b77dcdbad5e
+ARG DSV41_VLLM_TREE=3302edb15da7502a82ac70f03dd9cd83b3f3e211
 
 # Compile parallelism: spark-ds41f sizes jobs from MemAvailable (8 GiB per job, at most 10, two NVCC
 # threads each); on a GB10's 20 cores that is 8.
@@ -284,12 +295,27 @@ RUN set -eux; \
     ds41f-prepare --smoke > /work/out/smoke.py; \
     printf '%s\n' "$SPARK_DS41F_REVISION" > /work/out/REVISION
 
-# ── dsv41-vllm: our patches on his vLLM series ──────────────────────────────────────────────────────
+# ── dsv41-vllm: our patches and the scale-codes overlay on his vLLM series ─────────────────────────
 FROM fetch AS dsv41-vllm
+
+ARG SPARK_DS41F_UPSTREAM
+ARG SCALE_CODES_REVISION
+RUN set -eux; \
+    git init --quiet /work/scale-codes; \
+    cd /work/scale-codes; \
+    git remote add origin "$SPARK_DS41F_UPSTREAM"; \
+    git fetch --quiet --depth 1 --no-tags origin "$SCALE_CODES_REVISION"; \
+    git checkout --quiet --detach FETCH_HEAD; \
+    test "$(git rev-parse HEAD)" = "$SCALE_CODES_REVISION"; \
+    test -z "$(git status --porcelain --untracked-files=all)"
 
 ARG SPARK_DS41F_LOCK
 ARG VLLM_PATCH_HEAD
 ARG DSV41_VLLM_PATCHES
+ARG SCALE_CODES_OVERLAY
+ARG SCALE_CODES_FUSED_MOE_TILELANG_SHA256
+ARG SCALE_CODES_TILELANG_GEMM_SHA256
+ARG SCALE_CODES_TILELANG_MOE_SHA256
 ARG DSV41_VLLM_PATCH_HEAD
 ARG DSV41_VLLM_TREE
 COPY docker/*.patch /work/dsv41/
@@ -301,6 +327,24 @@ RUN set -eux; \
       git -c user.name="Justin Casey" -c user.email="4348807+justincasey@users.noreply.github.com" \
         -c commit.gpgsign=false am --quiet --committer-date-is-author-date "/work/dsv41/$patch"; \
     done; \
+    overlay="vllm/model_executor/layers/fused_moe/tilelang.py $SCALE_CODES_FUSED_MOE_TILELANG_SHA256 \
+      vllm/models/deepseek_v4_1/tilelang/gemm.py $SCALE_CODES_TILELANG_GEMM_SHA256 \
+      vllm/models/deepseek_v4_1/tilelang/moe.py $SCALE_CODES_TILELANG_MOE_SHA256"; \
+    set -- $overlay; \
+    while [ "$#" -gt 0 ]; do \
+      test -z "$(git diff --name-only "$VLLM_PATCH_HEAD" HEAD -- "$1")"; \
+      echo "$2  /work/scale-codes/$SCALE_CODES_OVERLAY/$1" | sha256sum --check --strict; \
+      cp "/work/scale-codes/$SCALE_CODES_OVERLAY/$1" "$1"; \
+      git add -- "$1"; \
+      shift 2; \
+    done; \
+    GIT_AUTHOR_NAME="Christopher Owen" GIT_AUTHOR_EMAIL="christopherowen@users.noreply.github.com" \
+    GIT_AUTHOR_DATE="2026-10-18T09:26:40+02:00" GIT_COMMITTER_NAME="Justin Casey" \
+    GIT_COMMITTER_EMAIL="4348807+justincasey@users.noreply.github.com" \
+    GIT_COMMITTER_DATE="2026-10-18T09:26:40+02:00" \
+      git -c commit.gpgsign=false commit --quiet \
+        -m "DeepSeek V4.1 MoE: the routed experts' scales as row bases and 4-bit codes" \
+        -m "Christopher Owen's scale-codes overlay, copied unmodified from spark-ds41f $SCALE_CODES_REVISION ($SCALE_CODES_OVERLAY): the three files over r6w's (r6v with 0181). The grouped GEMMs expand the codes into the same scale words, so every output bit is r6w's, from half the scale bytes."; \
     git diff --check "$VLLM_PATCH_HEAD" HEAD; \
     test -z "$(git status --porcelain --untracked-files=all)"; \
     test "$(git rev-parse 'HEAD^{tree}')" = "$DSV41_VLLM_TREE"; \
@@ -472,8 +516,8 @@ LABEL org.opencontainers.image.source="https://github.com/christopherowen/spark-
 
 USER root
 
-# The serving vLLM is his r6w tree plus our patches (local.dsv41.vllm.* labels); the native
-# extensions are built from his tree, which our Python-only patches leave unchanged.
+# The serving vLLM is his r6w tree plus our patches and the scale-codes overlay (local.dsv41.vllm.*
+# labels); the native extensions are built from his tree, which these Python-only changes leave unchanged.
 COPY --from=dsv41-vllm /work/build/context/dsv41-vllm-source/ /opt/spark3/candidate/vllm/
 COPY --from=fetch /work/build/context/b12x-source/ /opt/spark3/candidate/b12x/
 COPY --from=vllm-native-builder \
@@ -744,14 +788,21 @@ ARG SPARK_DS41F_REVISION
 ARG DSV41_VLLM_PATCHES
 ARG DSV41_VLLM_PATCH_HEAD
 ARG DSV41_VLLM_TREE
+ARG SCALE_CODES_REVISION
+ARG SCALE_CODES_OVERLAY
+ARG SCALE_CODES_FUSED_MOE_TILELANG_SHA256
+ARG SCALE_CODES_TILELANG_GEMM_SHA256
+ARG SCALE_CODES_TILELANG_MOE_SHA256
 
 LABEL org.opencontainers.image.title="dsv41-1017-ds41f" \
-      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on a four-DGX-Spark RoCE ring: spark-ds41f r6w plus the dsv41-1017 patches (reasoning-effort aliases, weight snapshots)" \
+      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on a four-DGX-Spark RoCE ring: spark-ds41f r6w plus the dsv41-1017 patches (reasoning-effort aliases, weight snapshots) and spark-ds41f's MoE scale-codes overlay" \
       org.opencontainers.image.licenses="Apache-2.0" \
       local.dsv41.engine="spark-ds41f r6w" \
       local.dsv41.spark-ds41f.upstream="${SPARK_DS41F_UPSTREAM}" \
       local.dsv41.spark-ds41f.revision="${SPARK_DS41F_REVISION}" \
       local.dsv41.vllm.patches="${DSV41_VLLM_PATCHES}" \
+      local.dsv41.vllm.scale-codes.revision="${SCALE_CODES_REVISION}" \
+      local.dsv41.vllm.scale-codes.overlay="${SCALE_CODES_OVERLAY}" \
       local.dsv41.vllm.patch-head="${DSV41_VLLM_PATCH_HEAD}" \
       local.dsv41.vllm.tree="${DSV41_VLLM_TREE}"
 
@@ -764,11 +815,17 @@ COPY --from=fetch /work/spark-ds41f/LICENSE /opt/spark-ds41f/LICENSE
 COPY --from=fetch /work/out/smoke.py /work/out/REVISION /opt/spark-ds41f/
 
 # The patched TileLang carries the SM120-family block-scaled MMA on SM121 (patches/tilelang 0001-0003),
-# and the serving vLLM carries our reasoning-effort aliases and the weight-snapshot loader hook; none of
-# these files is importable without a GPU, so all are read as files.
-RUN python3 - <<'PY'
+# and the serving vLLM carries our reasoning-effort aliases, the weight-snapshot loader hook and the
+# scale-codes overlay's three files byte for byte; none of these files is importable without a GPU, so all
+# are read as files.
+RUN SCALE_CODES_FUSED_MOE_TILELANG_SHA256=${SCALE_CODES_FUSED_MOE_TILELANG_SHA256} \
+    SCALE_CODES_TILELANG_GEMM_SHA256=${SCALE_CODES_TILELANG_GEMM_SHA256} \
+    SCALE_CODES_TILELANG_MOE_SHA256=${SCALE_CODES_TILELANG_MOE_SHA256} \
+    python3 - <<'PY'
 import ast
+import hashlib
 import importlib.util
+import os
 from pathlib import Path
 
 tilelang = Path(importlib.util.find_spec("tilelang").submodule_search_locations[0])
@@ -794,4 +851,14 @@ snapshot = ast.parse((loader / "weight_snapshot.py").read_text())
 names = {node.name for node in snapshot.body if isinstance(node, ast.ClassDef)}
 assert {"WeightSnapshot", "SnapshotStore", "LoadProbe"} <= names, names
 print("Weight snapshot hook present (DSV41_WEIGHT_SNAPSHOT=1 enables it)")
+
+vllm = Path("/opt/spark3/candidate/vllm/vllm")
+for path, pin in (
+    ("model_executor/layers/fused_moe/tilelang.py", "SCALE_CODES_FUSED_MOE_TILELANG_SHA256"),
+    ("models/deepseek_v4_1/tilelang/gemm.py", "SCALE_CODES_TILELANG_GEMM_SHA256"),
+    ("models/deepseek_v4_1/tilelang/moe.py", "SCALE_CODES_TILELANG_MOE_SHA256"),
+):
+    digest = hashlib.sha256((vllm / path).read_bytes()).hexdigest()
+    assert digest == os.environ[pin], f"vllm/{path} is not the scale-codes overlay's file ({digest})"
+print("MoE scale-codes overlay present")
 PY

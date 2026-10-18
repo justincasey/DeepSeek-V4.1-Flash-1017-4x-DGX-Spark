@@ -16,7 +16,11 @@ and each remains under its own license.
 - vLLM (Apache-2.0, the vLLM project), via Local Inference Lab's fork
   (https://github.com/local-inference-lab/vllm, branch integration/karmic-kraken-beta, commit
   19f2c20ed4d64ae22bd009ceacadd85e2a81e354), with spark-ds41f's r6w vLLM series (173 patches: r6v's 172 plus
-  0181, the routed SwiGLU and MXFP8 cast over the live tiles); and the vLLM
+  0181, the routed SwiGLU and MXFP8 cast over the live tiles), then spark-ds41f's lossless MoE scale-codes
+  overlay by Christopher Owen (Apache-2.0; commit a250ace70424475c04b0919fc9a46f23c19e51da,
+  experiments/2026-10-18-scale-codes/overlay: vllm/model_executor/layers/fused_moe/tilelang.py and
+  vllm/models/deepseek_v4_1/tilelang/{gemm,moe}.py, copied unmodified and pinned by sha256; the routed
+  experts' scales as row bases and 4-bit codes); and the vLLM
   nightly image docker.io/vllm/vllm-openai@sha256:3cf14c52765a0f0c2f09035e05fa79e1e4b2f9788b64afa90fa41c1ff12d29cf
   (vllm-project/vllm af1c01499b289be555c475669ba50a88e96d846e, CUDA 13.0.2, FlashInfer 0.6.18.post1) as the
   runtime base.
@@ -45,6 +49,7 @@ Patch authors, from the patch headers of the series above: Christopher Owen (all
 TileKernels patches, three of four NCCL patches, and 172 of 173 vLLM patches); carlosmolina0615 (vLLM 0045,
 the CED decoder's MoE routed with its own padding mask in TileLang); Stanislav Bardyuk (NCCL 0001,
 NVIDIA/nccl#2393). The vLLM series credits huxiaofengtiger (NVIDIA Developer Forums) for reported issues,
-and ports vllm-project/vllm#51694. Our patches (docker/0001-*.patch, docker/0002-*.patch) are by Justin Casey.
+and ports vllm-project/vllm#51694. The scale-codes overlay is by Christopher Owen. Our patches
+(docker/0001-*.patch, docker/0002-*.patch) are by Justin Casey.
 
 Full credits, including prior art used as inspiration only: README.md, section "Credits".
