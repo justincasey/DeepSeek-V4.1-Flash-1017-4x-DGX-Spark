@@ -199,7 +199,7 @@ cp dsv41.sh "$tmp/"; cp -R docker "$tmp/docker"
 } >"$tmp/.env"
 c=$(cd "$tmp" && env -i PATH="$PATH" HOME="$HOME" PORT=2222 ./dsv41.sh print-serve 1 | sed -n 2p) || bad "precedence print-serve failed"
 has "$c" "--port 2222" && has "$c" "--max-num-seqs 7" && has "$c" 'temperature\":0.6' && has "$c" "--max-model-len 1048576" \
-  && has "$c" "dsv41-1017-ds41f:r6v /models " && has "$c" 'SPARKNET_ROCE_PEER_HCAS=\{\"0\":\[\"p1\"\]\,\"2\":\[\"n1\"\]\}' \
+  && has "$c" "dsv41-1017-ds41f:r6w /models " && has "$c" 'SPARKNET_ROCE_PEER_HCAS=\{\"0\":\[\"p1\"\]\,\"2\":\[\"n1\"\]\}' \
   && ok "precedence: env > .env > defaults (ring pins from .env)" || bad "precedence: $c"
 
 # the shipped site configuration renders for every rank without ssh
@@ -214,7 +214,7 @@ has "$c" 'SPARKNET_ROCE_PEER_HCAS=\{\"3\":\[\"rocep1s0f0\"\,\"roceP2p1s0f0\"\]\,
   && ok ".env.example renders the measured ring without ssh" || bad ".env.example ring: $(envval "$c" SPARKNET_ROCE_PEER_HCAS)"
 
 # pinned memory-guard scripts: the copy start installs must be spark-ds41f's own at the pinned commit
-grep -q '^GUARD_REV=cbf47749e22e25f4feb3ba9f455e8a89596eacbe$' dsv41.sh && ok "memory guard pinned to spark-ds41f@cbf47749" \
+grep -q '^GUARD_REV=2dc95329610188451a5c5f5af98e5c392144809c$' dsv41.sh && ok "memory guard pinned to spark-ds41f@2dc95329" \
   || bad "GUARD_REV pin"
 
 # pinned checkpoint manifest: every shard of the index plus config, tokenizer and encoder

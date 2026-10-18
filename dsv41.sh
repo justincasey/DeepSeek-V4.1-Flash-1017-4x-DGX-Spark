@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # dsv41.sh: DeepSeek-V4.1-Flash-1017 on four DGX Sparks, TP4 over the switchless ring, on Christopher Owen's
-# spark-ds41f engine (r6v: vLLM + TileLang kernels + sparknet one-shot collectives + patched NCCL, docker/Dockerfile).
+# spark-ds41f engine (r6w: vLLM + TileLang kernels + sparknet one-shot collectives + patched NCCL, docker/Dockerfile).
 # Run from any control machine with key-based ssh to the four nodes. Nothing runs on the nodes outside docker,
 # except the Hugging Face client for `fetch` and the memory guard (a systemd unit per node, see start).
 #
@@ -49,8 +49,8 @@ if [[ -f $ROOT/.env ]]; then
 fi
 unset _CALLER _k _v _line
 
-# Defaults are spark-ds41f r6v at shape tp4-ring (config/cluster.json @ cbf47749), as its site receipt
-# experiments/2026-10-17-site-tp4-4k-1017 ran it on a stock 4 KiB kernel.
+# Defaults are spark-ds41f r6w at shape tp4-ring (config/cluster.json @ 2dc95329, unchanged since cbf47749), as its
+# site receipt experiments/2026-10-17-site-tp4-4k-1017 ran r6v on a stock 4 KiB kernel.
 : "${NODES:=192.168.1.121 192.168.1.122 192.168.1.123 192.168.1.18}"   # management addresses, ring cable order, rank 0 first
 : "${SSH_USER:=spark}"
 : "${MODELS_DIR:=/home/spark/models}"
@@ -59,7 +59,7 @@ unset _CALLER _k _v _line
 : "${MODEL_NAME:=DeepSeek-V4.1-Flash-1017}"
 : "${CHECKSUMS:=config/DeepSeek-V4.1-Flash-1017.sha256}"
 : "${HF_BIN:=/home/spark/venvs/hf/bin/hf}"
-: "${IMAGE:=dsv41-1017-ds41f:r6v}"
+: "${IMAGE:=dsv41-1017-ds41f:r6w}"
 : "${BUILD_DIR:=/home/spark/build/dsv41-1017-ds41f}"
 : "${CACHE_DIR:=/home/spark/.cache/dsv41-ds41f}"   # mounted at /cache: JIT, TileLang, DSpark cost curves
 : "${CONTAINER:=dsv41-1017}"
@@ -114,7 +114,7 @@ ENGRAM_SHARDS="model-00047-of-00048.safetensors model-00048-of-00048.safetensors
 # The memory guard is spark-ds41f's own scripts/memguard-start.sh + scripts/memguard.sh, which the image carries
 # unmodified from the pinned commit; start copies them out of the image and refuses any other content.
 GUARD_SRC=/opt/spark-ds41f/scripts
-GUARD_REV=cbf47749e22e25f4feb3ba9f455e8a89596eacbe
+GUARD_REV=2dc95329610188451a5c5f5af98e5c392144809c
 GUARD_SUMS="c70a379efec2e48858e86c77ab8eb90cc748700f702afe663480d92fa5c1ab09  memguard.sh
 a1c0cb8e3d78eb3b22c457bb7fba8087f79e9ac31342dc38106f7cde65bd5f15  memguard-start.sh"
 GUARD_UNIT=$CONTAINER-memguard.service

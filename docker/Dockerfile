@@ -1,15 +1,16 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 # SPDX-License-Identifier: Apache-2.0
 #
-# DeepSeek-V4.1-Flash-1017 on four DGX Sparks: Christopher Owen's spark-ds41f engine, release r6v
-# (experiments/2026-10-17-r6v), rebuilt from scratch, plus one patch of ours on top.
+# DeepSeek-V4.1-Flash-1017 on four DGX Sparks: Christopher Owen's spark-ds41f engine, release r6w
+# (experiments/2026-10-18-r6w-swiglu: r6v plus vLLM 0181, the routed SwiGLU and MXFP8 cast over the live
+# tiles), rebuilt from scratch, plus one patch of ours on top.
 #
-#   docker build -f docker/Dockerfile -t dsv41-1017-ds41f:r6v .     (context: the repository root; only
+#   docker build -f docker/Dockerfile -t dsv41-1017-ds41f:r6w .     (context: the repository root; only
 #                                                                    docker/ is read; linux/arm64 only)
 #
 # Every input is pinned below, by commit or digest. The `fetch` stage clones spark-ds41f at
 # SPARK_DS41F_REVISION and runs ITS OWN `bin/spark build prepare` code (build_inputs, prepare_project,
-# prepare_cutlass, prepare_wheels, export_source, vllm_deletions, build_problems) against the r6v lock:
+# prepare_cutlass, prepare_wheels, export_source, vllm_deletions, build_problems) against the r6w lock:
 # each upstream is fetched at its pinned commit, its patch series is applied unmodified with `git am`
 # (fixed committer, so the patch heads reproduce the source manifest's commits byte for byte), and the
 # patch-set fingerprint, patch head, tree and TileLang's submodule commits must equal the manifest's.
@@ -32,17 +33,17 @@ ARG BASE_IMAGE_DIGEST=sha256:3cf14c52765a0f0c2f09035e05fa79e1e4b2f9788b64afa90fa
 ARG VLLM_BASE_SOURCE_REVISION=af1c01499b289be555c475669ba50a88e96d846e
 
 ARG SPARK_DS41F_UPSTREAM=https://github.com/christopherowen/spark-ds41f
-ARG SPARK_DS41F_REVISION=cbf47749e22e25f4feb3ba9f455e8a89596eacbe
-ARG SPARK_DS41F_LOCK=experiments/2026-10-17-r6v/upstreams.lock.json
-ARG SPARK_DS41F_PROFILE=experiments/2026-10-17-r6v/r6v-tp4-1017.json
+ARG SPARK_DS41F_REVISION=2dc95329610188451a5c5f5af98e5c392144809c
+ARG SPARK_DS41F_LOCK=experiments/2026-10-18-r6w-swiglu/upstreams.lock.json
+ARG SPARK_DS41F_PROFILE=experiments/2026-10-18-r6w-swiglu/r6w-tp4-1017.json
 
 ARG VLLM_UPSTREAM=https://github.com/local-inference-lab/vllm
 ARG VLLM_REF=integration/karmic-kraken-beta
 ARG VLLM_REVISION=19f2c20ed4d64ae22bd009ceacadd85e2a81e354
-ARG VLLM_SERIES=experiments/2026-10-17-r6v/vllm/series
-ARG VLLM_PATCHSET_SHA256=00b1018e0078de4fc986554d9eccc8ed1e7f404e54268ba4e71054e03396c0c4
-ARG VLLM_PATCH_HEAD=c001cc4ed77bef686ddd006be0dd706b9c15d7b7
-ARG VLLM_TREE=d11e9836e61bc2b763d6805d3324ec8fb5376360
+ARG VLLM_SERIES=experiments/2026-10-18-r6w-swiglu/vllm/series
+ARG VLLM_PATCHSET_SHA256=1879bb379390dcbd0f75a198dd92453afeaaf64f5d97018a5e79b936d20902e3
+ARG VLLM_PATCH_HEAD=600fc0ebfa240c804d5f5e3e0116ce6b9207839c
+ARG VLLM_TREE=8564da0b9a0f19d70ff75decb15ff89101886279
 ARG VLLM_CANONICAL_UPSTREAM=https://github.com/vllm-project/vllm
 
 ARG B12X_UPSTREAM=https://github.com/local-inference-lab/b12x
@@ -94,11 +95,11 @@ ARG CUTLASS_RELEASE_TAG=v4.7.1
 
 # Ours, applied after his vLLM series (Apache-2.0, this repository).
 ARG DSV41_VLLM_PATCH=0001-deepseek-v41-reasoning-effort-minimal-medium.patch
-ARG DSV41_VLLM_PATCH_HEAD=dc6bfcd7e00f50057bd1274ca37100752465d7d7
-ARG DSV41_VLLM_TREE=18d715667f1b91ed8c176a8402bdcc0e1e11c8a0
+ARG DSV41_VLLM_PATCH_HEAD=8c76763dafcfe6cec143767661f2c0877e0b76ff
+ARG DSV41_VLLM_TREE=2c23197db8159d0ef99faece6c8f7108e3ff8f9f
 
 # Compile parallelism: spark-ds41f sizes jobs from MemAvailable (8 GiB per job, at most 10, two NVCC
-# threads each); on a GB10's 20 cores that is 8, the value its r6v build used.
+# threads each); on a GB10's 20 cores that is 8.
 ARG VLLM_COMPILE_JOBS=8
 ARG VLLM_NVCC_THREADS=2
 ARG TILELANG_COMPILE_JOBS=8
@@ -466,7 +467,7 @@ LABEL org.opencontainers.image.source="https://github.com/christopherowen/spark-
 
 USER root
 
-# The serving vLLM is his r6v tree plus our patch (local.dsv41.vllm.* labels); the native
+# The serving vLLM is his r6w tree plus our patch (local.dsv41.vllm.* labels); the native
 # extensions are built from his tree, which our Python-only patch leaves unchanged.
 COPY --from=dsv41-vllm /work/build/context/dsv41-vllm-source/ /opt/spark3/candidate/vllm/
 COPY --from=fetch /work/build/context/b12x-source/ /opt/spark3/candidate/b12x/
@@ -740,9 +741,9 @@ ARG DSV41_VLLM_PATCH_HEAD
 ARG DSV41_VLLM_TREE
 
 LABEL org.opencontainers.image.title="dsv41-1017-ds41f" \
-      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on a four-DGX-Spark RoCE ring: spark-ds41f r6v plus the dsv41-1017 reasoning-effort alias patch" \
+      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on a four-DGX-Spark RoCE ring: spark-ds41f r6w plus the dsv41-1017 reasoning-effort alias patch" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      local.dsv41.engine="spark-ds41f r6v" \
+      local.dsv41.engine="spark-ds41f r6w" \
       local.dsv41.spark-ds41f.upstream="${SPARK_DS41F_UPSTREAM}" \
       local.dsv41.spark-ds41f.revision="${SPARK_DS41F_REVISION}" \
       local.dsv41.vllm.patches="${DSV41_VLLM_PATCH}" \

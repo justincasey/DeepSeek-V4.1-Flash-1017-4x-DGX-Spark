@@ -8,13 +8,14 @@ image build at the pinned commit or digest and patched unmodified; none is redis
 and each remains under its own license.
 
 - spark-ds41f by Christopher Owen (https://github.com/christopherowen/spark-ds41f), Apache-2.0, at commit
-  cbf47749e22e25f4feb3ba9f455e8a89596eacbe, release r6v (experiments/2026-10-17-r6v): the build preparation
+  2dc95329610188451a5c5f5af98e5c392144809c, release r6w (experiments/2026-10-18-r6w-swiglu): the build preparation
   (bin/spark), the image recipe (docker/Dockerfile, whose build stages docker/Dockerfile here follows), the
   patch series for every component below, the serving configuration, and the memguard scripts shipped in
   the image under /opt/spark-ds41f.
 - vLLM (Apache-2.0, the vLLM project), via Local Inference Lab's fork
   (https://github.com/local-inference-lab/vllm, branch integration/karmic-kraken-beta, commit
-  19f2c20ed4d64ae22bd009ceacadd85e2a81e354), with spark-ds41f's r6v vLLM series (172 patches); and the vLLM
+  19f2c20ed4d64ae22bd009ceacadd85e2a81e354), with spark-ds41f's r6w vLLM series (173 patches: r6v's 172 plus
+  0181, the routed SwiGLU and MXFP8 cast over the live tiles); and the vLLM
   nightly image docker.io/vllm/vllm-openai@sha256:3cf14c52765a0f0c2f09035e05fa79e1e4b2f9788b64afa90fa41c1ff12d29cf
   (vllm-project/vllm af1c01499b289be555c475669ba50a88e96d846e, CUDA 13.0.2, FlashInfer 0.6.18.post1) as the
   runtime base.
@@ -40,7 +41,7 @@ and each remains under its own license.
   `./dsv41.sh fetch`; the image contains no weights.
 
 Patch authors, from the patch headers of the series above: Christopher Owen (all B12X, TileLang and
-TileKernels patches, three of four NCCL patches, and 171 of 172 vLLM patches); carlosmolina0615 (vLLM 0045,
+TileKernels patches, three of four NCCL patches, and 172 of 173 vLLM patches); carlosmolina0615 (vLLM 0045,
 the CED decoder's MoE routed with its own padding mask in TileLang); Stanislav Bardyuk (NCCL 0001,
 NVIDIA/nccl#2393). The vLLM series credits huxiaofengtiger (NVIDIA Developer Forums) for reported issues,
 and ports vllm-project/vllm#51694. Our patch (docker/0001-*.patch) is by Justin Casey.
