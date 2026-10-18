@@ -25,23 +25,35 @@ cp .env.example .env        # set NODES (management addresses, ring cable order,
 
 ## Headline numbers
 
-This engine has not been qualified on this ring yet. Its column below is filled at qualification, with the same
-harnesses that measured the v1.0.0 baseline beside it ([Benchmarks](#benchmarks)).
+Measured on this ring with the same harnesses: v1.0.0 (the previous engine, [fallback](#fallback-to-v100)) on
+2026-10-17, and this engine on 2026-10-17/18 with this repo's defaults (image `sha256:875c7c9edc08…`, checkpoint
+`1bae0e1`). Decode: greedy, thinking off, `max_tokens` 512, 30 s windows, tokens counted from `usage`. Method and
+full tables under [Benchmarks](#benchmarks).
 
-| Measurement | v1.0.0 baseline (measured 2026-10-17) | r6v engine: measured at qualification |
-|---|---|---|
-| Decode, one request, prose / code (`bench decode`) | 35.8 / 55.1 tok/s | |
-| Decode, 4 requests aggregate, prose / code | 89.9 / 132.4 tok/s | |
-| Prefill, unique text, 128K / 1M tokens (`bench prefill`) | 1,724 / 968 tok/s | |
-| Needle at 1,000,006 prompt tokens (`bench needle`) | PASS, 985 s | |
-| Salted needle at 547,579 prompt tokens | PASS, 1,157 tok/s | |
-| qeval, 75 tasks, greedy | 71/75 | |
-| Quality gate, 50 exact-answer questions, greedy | 49/50 | |
-| API conformance (`api-test`) | 25/26 | |
-| Encoding parity (`parity`) | 15/15 | |
+| Measurement | v1.0.0 | r6v (this engine) | Change |
+|---|---|---|---|
+| Decode, one request, prose / code | 35.8 / 55.1 tok/s | **61.4 / 87.2 tok/s** | 1.7× / 1.6× |
+| Decode, 4 requests aggregate, prose / code | 89.9 / 132.4 tok/s | **204.4 / 229.4 tok/s** | 2.3× / 1.7× |
+| Decode, 16 requests aggregate, prose / code | not possible (4 sequences) | **551.8 / 574.7 tok/s** | |
+| Prefill, unique text, 128K / 1M tokens | 1,724 / 968 tok/s | **5,916 / 4,160 tok/s** | 3.4× / 4.3× |
+| Needle at 1,000,006 prompt tokens | PASS, 985 s | **PASS, 236.6 s** | 4.2× |
+| Salted cold needle, ~545K prompt tokens | PASS, 547,579 tokens at 1,157 tok/s | **PASS, 545,008 tokens at 5,030 tok/s** | 4.3× |
+| qeval, 75 tasks, greedy | 71/75 (median 48.4 tok/s) | 71/75 (median 86.3 tok/s) | same score |
+| Quality gate, 50 exact-answer questions, greedy | 49/50 | 49/50, all 50 answers identical to v1.0.0 | same |
+| API conformance (`api-test`) | 25/26 | **26/26** | |
+| Encoding parity (`parity`) | 15/15 | 15/15 | |
+| Token-id oracle (`bench check`) | 3/6 prompts match | **6/6, three runs** | |
+| KV pool per rank | 2,666,467 tokens in 13 GiB | **8,580,566 tokens in 10.5 GiB** (8.18× a full 1M request) | 3.2× |
+| Concurrent sequences at 1M | 4 | **16** | 4× |
+| Boot to API (`start`) | ~340 s | 396 s first boot, including the TileLang kernel preparation | |
 
-Pending: every r6v cell above, plus boot time, weights per rank and the KV pool in tokens; they land in
-`bench/records/` with the qualification run.
+Temperature-0 output no longer depends on load: an identical request returns the same tokens and logprobs alone,
+eight at once, staggered, mixed with other prompts, and with or without a prefix-cache hit
+([Determinism](#determinism)). MemAvailable stays at 17.6-19.6 GiB per node idle and 17.6-19.5 GiB after a 1M
+prefill and needle.
+
+Pending: the sustained-load soak result, and the decision on a server-side `max_tokens` default
+([API behaviour](#api-behaviour)).
 
 ## What you need
 
@@ -271,7 +283,7 @@ comment only at the start of a value or after whitespace. Defaults are spark-ds4
 | Drafting | DSpark (the drafter in the checkpoint): k=5, greedy drafts, block verification, adaptive verification priced from cost curves rank 0 profiles once per build and keeps in `/cache` |
 | Graphs | `FULL_AND_PIECEWISE` CUDA graphs captured at 1, 2, 3, 4, 6, 8, 12 … 32, then every 8th row up to 96; kernels prepared before memory profiling, `--jit-monitor-mode warn` logs any JIT after ready |
 | Split | TP4 across the four Sparks (attention, dense and experts), vLLM's multiprocess executor over `--nnodes 4`; rank 0 serves the API, ranks 1-3 headless; one prefill at a time |
-| KV | fixed 10.5 GiB per rank |
+| KV | fixed 10.5 GiB per rank: 8,580,566 tokens, 8.18× a full 1M request (measured at boot) |
 | Fabric | sparknet one-shot collectives up to 2 MiB, patched NCCL ring above that, both PCIe functions per cable ([The ring](#the-ring)) |
 | Host | per rank: the ten fast cores, a 112 GiB cgroup limit, `seccomp=unconfined` (Docker's default profile blocks io_uring), `--ipc=host`, unlimited memlock; spark-ds41f's fail-closed memory guard as a systemd unit per node |
 | Controller | `dsv41.sh`: bash over ssh from the control machine; `print-serve` shows each rank's exact commands |
@@ -297,40 +309,86 @@ regression oracle to `bench/reference.json`; `check` replays it. Decode cells: g
 512, c workers issuing back-to-back streaming requests for a 30 s window; aggregate tok/s = sum of
 `usage.completion_tokens` / cell wall time (DSpark emits several tokens per chunk, so chunks are never counted).
 
-The qualification battery adds two external clients, not shipped here: MiaAI-Lab's `qeval.py` (75 tasks, greedy)
-and the salted cold needle (`needle_salted.py`) from spark-ds41f's external site receipt, so results compare with
-that receipt.
+The qualification battery adds three external clients, not shipped here: MiaAI-Lab's `qeval.py` (75 tasks, greedy),
+the salted cold needle (`needle_salted.py`) from spark-ds41f's external site receipt, and spark-ds41f's
+`token_determinism_text.py` (`experiments/2026-10-12-r6g`), so results compare with their records.
 
-### v1.0.0 baseline (2026-10-17)
+### r6v against v1.0.0
 
-The previous engine of this recipe ([v1.0.0](#fallback-to-v100)), measured on this ring with its defaults: 1M
-context, 4 sequences, DSpark k=3, checkpoint `1bae0e1`. Full record:
-[`bench/records/2026-10-17-v1.0.0`](bench/records/2026-10-17-v1.0.0/summary.md). The r6v engine is measured with
-the same harnesses at qualification; its record goes next to this one.
+Both measured on this ring at 1M context, checkpoint `1bae0e1`, each with its own defaults: v1.0.0 (the previous
+engine, [fallback](#fallback-to-v100)) on 2026-10-17 with 4 sequences and DSpark k=3; r6v on 2026-10-17/18 with
+16 sequences and DSpark k=5, image `sha256:875c7c9edc08…`. Records:
+[`bench/records/2026-10-17-v1.0.0`](bench/records/2026-10-17-v1.0.0/summary.md) and
+[`bench/records/2026-10-18-r6v`](bench/records/2026-10-18-r6v/summary.md) (c=16 in its `decode-c16/`).
 
-| Prompt | c=1 | c=2 | c=4 | c=8 |
-|---|---:|---:|---:|---:|
-| prose | 35.8 | 60.4 | 89.9 | 85.5 |
-| code | 55.1 | 88.2 | 132.4 | 139.1 |
-| structured | 48.8 | 77.4 | 116.6 | 112.3 |
-| json | 48.0 | 78.4 | 115.7 | 115.0 |
+**Decode**, aggregate tok/s, v1.0.0 → r6v (speedup):
 
-Aggregate decode tok/s. At c=8 half the requests queued (4 sequences), so its TTFT was 14-24 s; c=1 TTFT was
-0.16-0.20 s. DSpark accepted 1.05 (prose) to 2.18 (code) extra tokens per draft step.
+| Prompt | c=1 | c=2 | c=4 | c=8 | c=16 (r6v only) |
+|---|---:|---:|---:|---:|---:|
+| prose | 35.8 → 61.4 (1.7×) | 60.4 → 116.6 (1.9×) | 89.9 → 204.4 (2.3×) | 85.5 → 274.8 (3.2×) | 551.8 |
+| code | 55.1 → 87.2 (1.6×) | 88.2 → 159.3 (1.8×) | 132.4 → 229.4 (1.7×) | 139.1 → 422.7 (3.0×) | 574.7 |
+| structured | 48.8 → 80.6 (1.7×) | 77.4 → 147.5 (1.9×) | 116.6 → 258.1 (2.2×) | 112.3 → 436.2 (3.9×) | 566.0 |
+| json | 48.0 → 88.5 (1.8×) | 78.4 → 161.0 (2.1×) | 115.7 → 293.1 (2.5×) | 115.0 → 307.3 (2.7×) | 639.1 |
+
+One r6v stream decodes at 62.3 (prose) to 89.0 (code) tok/s; at c=16 each stream still gets 34.2-43.3 tok/s. TTFT:
+r6v 0.13-0.16 s at c=1, 0.24-0.39 s at c=8 and 0.34-0.45 s at c=16; v1.0.0 0.16-0.20 s at c=1, and 14-24 s at c=8
+because half its requests queued behind 4 sequences.
+
+**DSpark acceptance**, accepted tokens per draft step at c=1 (`bench spec`):
+
+| Prompt | v1.0.0 (k=3) | r6v (k=5) |
+|---|---:|---:|
+| prose | 1.045 | 0.936 |
+| code | 2.183 | 2.179 |
+| structured | 1.824 | 1.845 |
+| json | 1.735 | 2.072 |
+| all | 1.662 | 1.741 |
+
+Acceptance is about level between the two engines, so the decode speedup comes from shorter steps.
+
+**Prefill**, unique text (no prefix-cache hits), tok/s:
 
 | Prompt tokens | 4K | 16K | 32K | 64K | 128K | 256K | 512K | 1M |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Prefill tok/s | 2,138 | 1,817 | 1,902 | 1,810 | 1,724 | 1,473 | 1,282 | 968 |
+| v1.0.0 | 2,138 | 1,817 | 1,902 | 1,810 | 1,724 | 1,473 | 1,282 | 968 |
+| r6v | 5,105 | 5,753 | 6,013 | 6,004 | 5,916 | 5,579 | 5,042 | 4,160 |
+| speedup | 2.4× | 3.2× | 3.2× | 3.3× | 3.4× | 3.8× | 3.9× | 4.3× |
 
-| Check | v1.0.0 result |
+**Checks:**
+
+| Check | v1.0.0 | r6v |
+|---|---|---|
+| Needle, 1,000,006 prompt tokens (`bench needle`) | PASS, 985 s | PASS, 236.6 s (4.2×) |
+| Salted cold needle | PASS, 547,579 tokens in 473 s (1,157 tok/s) | PASS, 545,008 tokens in 108 s (5,030 tok/s; 4.3×) |
+| qeval, 75 tasks | 71/75, median 48.4 tok/s | 71/75, median 86.3 tok/s |
+| Quality gate, 50 exact-answer questions, greedy | 49/50 | 49/50, all 50 answers identical to v1.0.0's |
+| `api-test` | 25/26 (`greedy_is_deterministic` failed on a near-tie) | 26/26 |
+| `parity` | 15/15 | 15/15 |
+| `bench check` against the engine's own `bench pin` oracle | 3/6 prompts match (near-tie divergence) | 6/6 prompts match, in each of three runs |
+
+qeval's per-category result is the same on both engines: code 24/25, format 7/7, json 6/8, math 13/14, prose 5/5,
+reason 16/16.
+
+### Determinism
+
+spark-ds41f's `token_determinism_text.py --tokens 192 --long-lines 700 --wide` against r6v compares every response
+with a reference run of the same prompt, temperature 0, with logprobs. Every scenario came back identical, 0 token
+and 0 logprob differences: eight requests at once (`c8`), staggered starts, mixed with other prompts (`mixed`,
+`mixed15`), a prefix-cache hit against a miss (`cached`), and a repeat (`again`). The token-id oracle
+(`bench pin`, then `bench check` three times) matched on all six prompts every time.
+
+### Boot and memory (r6v)
+
+| Measurement | Result |
 |---|---|
-| Needle, 1,000,006 prompt tokens (`bench needle`) | PASS, 985 s |
-| Salted cold needle, 547,579 prompt tokens | PASS, 473 s (1,157 tok/s) |
-| qeval, 75 tasks | 71/75 (code 24/25, format 7/7, json 6/8, math 13/14, prose 5/5, reason 16/16) |
-| Quality gate, 50 exact-answer questions, greedy | 49/50 (CUDA graphs and eager alike) |
-| `api-test` | 25/26 (`greedy_is_deterministic` failed on a near-tie) |
-| `parity` | 15/15 |
-| `bench check` | 3/6 prompts token-identical to the pinned oracle (near-tie divergence) |
+| First boot to API, including the TileLang kernel preparation | 396 s |
+| CUDA graph capture | 34 s, 1.83 GiB |
+| KV pool | 8,580,566 tokens in 10.5 GiB per rank (8.18× a full 1M request) |
+| MemAvailable per node, idle | 17.6-19.6 GiB |
+| MemAvailable per node after a 1M prefill and the 1M needle | 17.6-19.5 GiB |
+
+The startup guard trips at 5 GiB and the steady guard at 3 GiB, so serving leaves ~14 GiB of margin on the tightest
+node.
 
 ### For reference: spark-ds41f's published numbers
 
@@ -359,9 +417,9 @@ Their numbers, from their harnesses and sites, not measured here and not directl
   (`<｜deepseek_image｜>`) is rejected: "Images should be provided as image content blocks". This is DeepSeek's
   encoder validation, applied to every role (spark-ds41f's vLLM 0178 follows it). Agents that paste DeepSeek source
   code or docs into a prompt or tool result hit it.
-- **First boot is slow.** Each rank prepares its kernels before memory profiling (about 188 TileLang calls per rank
-  on spark-ds41f's external 4 KiB site) into `CACHE_DIR`; DSpark also profiles its cost curves once per build. Later
-  boots reuse both. Keep `CACHE_DIR` on persistent local disk; `WAIT_TIMEOUT` defaults to 3600 s for that first boot.
+- **First boot is slow.** Each rank prepares its kernels before memory profiling into `CACHE_DIR`, and DSpark profiles
+  its cost curves once per build: the first boot here took 396 s to the API. Later boots reuse both. Keep `CACHE_DIR`
+  on persistent local disk; `WAIT_TIMEOUT` defaults to 3600 s.
 - **The memory guard kills, by design.** A guard SIGKILLs its rank when MemAvailable drops below its threshold
   (5 GiB while loading, 3 GiB serving) or when the container can no longer be inspected. TP4 cannot continue on three
   ranks, so a kill stops the service: read `./dsv41.sh logs` and the guard journal (`journalctl -t spark-memguard`),
@@ -425,7 +483,8 @@ that engine.
   `scripts/qeval.py`, run as an external client in the qualification battery (not included). MiaAI-Lab's and
   [knapcio/DeepSeek-V4.1-Flash-4x-DGX-Spark-TP4](https://github.com/knapcio/DeepSeek-V4.1-Flash-4x-DGX-Spark-TP4)'s
   SGLang recipes are prior art for this model on four Sparks (no code used).
-- `needle_salted.py` from spark-ds41f's external site receipt, run as an external client (not included).
+- `needle_salted.py` from spark-ds41f's external site receipt and spark-ds41f's `token_determinism_text.py`
+  (`experiments/2026-10-12-r6g`), run as external clients (not included).
 - The ring container contract and choosing rails by subnet come from our keys-TensorFold-GLM-5.3-TP4-4x-DGX-Spark
   recipe, and knapcio's GLM-5.3-gr8-4x-DGX-Spark-TP4 recipe (MIT) for the 4-node ring conventions.
 

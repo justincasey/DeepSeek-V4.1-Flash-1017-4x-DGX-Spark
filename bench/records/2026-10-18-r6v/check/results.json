@@ -1,0 +1,64 @@
+{
+ "step": "check",
+ "ok": true,
+ "started": "2026-10-17T22:40:12-0500",
+ "finished": "2026-10-17T22:40:19-0500",
+ "base_url": "http://192.168.1.121:8000",
+ "model": "deepseek-v4.1-flash",
+ "args": {
+  "base_url": "http://192.168.1.121:8000",
+  "model": "deepseek-v4.1-flash",
+  "timeout": 7200.0,
+  "step": "all",
+  "out": null,
+  "seconds": 30.0,
+  "max_tokens": 512,
+  "types": "prose,code,structured,json",
+  "lengths": "4k,16k,32k,64k,128k,256k,512k,1M",
+  "tokens": 1000000,
+  "reference": "/Users/justin/recipes/DeepSeek-V4.1-Flash-1017-4x-DGX-Spark.ds41f/bench/reference.json",
+  "conc": "1,2,4,8",
+  "ignore_eos": false
+ },
+ "results": {
+  "reference": "/Users/justin/recipes/DeepSeek-V4.1-Flash-1017-4x-DGX-Spark.ds41f/bench/reference.json",
+  "rows": [
+   {
+    "name": "prose",
+    "compared": "token_ids",
+    "divergence": null,
+    "match": true
+   },
+   {
+    "name": "code",
+    "compared": "token_ids",
+    "divergence": null,
+    "match": true
+   },
+   {
+    "name": "math",
+    "compared": "token_ids",
+    "divergence": null,
+    "match": true
+   },
+   {
+    "name": "json",
+    "compared": "token_ids",
+    "divergence": null,
+    "match": true
+   },
+   {
+    "name": "reasoning_off",
+    "compared": "token_ids",
+    "divergence": null,
+    "match": true
+   },
+   {
+    "name": "summary",
+    "compared": "token_ids",
+    "divergence": null,
+    "match": true
+   }
+  ]
+ }
+}
