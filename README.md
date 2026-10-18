@@ -627,10 +627,12 @@ Their numbers, from their harnesses and sites, not measured here and not directl
   [docs/findings/2026-10-18-thinking-mode-output-corruption.md](docs/findings/2026-10-18-thinking-mode-output-corruption.md).
   The current defaults leave it unchanged: the corruption probe (`bench/corruption_probe.py`) reports 9/13 on r6v and
   on them.
-- **Image token in text → 400.** A message whose text contains DeepSeek's literal image token
-  (`<｜deepseek_image｜>`) is rejected: "Images should be provided as image content blocks". This is DeepSeek's
-  encoder validation, applied to every role (spark-ds41f's vLLM 0178 follows it). Agents that paste DeepSeek source
-  code or docs into a prompt or tool result hit it.
+- **Image token in text → 400.** A message whose text contains DeepSeek's literal image placeholder (the word
+  `deepseek_image` between the fullwidth-bar delimiters `<｜` and `｜>`, written here split so this file is safe to
+  paste) is rejected: "Images should be provided as image content blocks". This is DeepSeek's encoder validation,
+  applied to every role (spark-ds41f's vLLM 0178 follows it). Agents that paste DeepSeek source code or docs into a
+  prompt or tool result hit it, and since the text stays in the conversation, every later request of that session
+  fails too: start a new session or go back to before the message that carried it.
 - **First boot is slow.** Each rank prepares its kernels before memory profiling into `CACHE_DIR` and writes its
   weight snapshot: the first r6v boot took 396 s to the API, and a boot that writes the snapshots ~184 s here. Later
   boots reuse both; since `docker/0007-*.patch` nothing is profiled for DSpark at boot. Keep `CACHE_DIR` on
