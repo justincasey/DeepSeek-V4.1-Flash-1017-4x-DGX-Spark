@@ -428,6 +428,11 @@ Their numbers, from their harnesses and sites, not measured here and not directl
 
 ## Known limits
 
+- **Open defect: thinking-mode answers can collapse.** With thinking on (the default), some short answers hit a
+  position where the next-token distribution is flat garbage: stray duplicated fragments at temperature 0,
+  unrelated text at the default temperature 1.0. Prefill reproduces it, so CUDA graphs and DSpark are ruled out.
+  Thinking-off requests were clean in every sample. Root cause unknown; see
+  [docs/findings/2026-10-18-thinking-mode-output-corruption.md](docs/findings/2026-10-18-thinking-mode-output-corruption.md).
 - **Image token in text → 400.** A message whose text contains DeepSeek's literal image token
   (`<｜deepseek_image｜>`) is rejected: "Images should be provided as image content blocks". This is DeepSeek's
   encoder validation, applied to every role (spark-ds41f's vLLM 0178 follows it). Agents that paste DeepSeek source
