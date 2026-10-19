@@ -1,0 +1,94 @@
+servebench suite dsv41-ladder: step c16 (run)
+servebench: closed warm-up 60 s, then 300 s in 10 windows
+servebench: window 1/10 done
+servebench: window 2/10 done
+servebench: window 3/10 done
+servebench: window 4/10 done
+servebench: window 5/10 done
+servebench: window 6/10 done
+servebench: window 7/10 done
+servebench: window 8/10 done
+servebench: window 9/10 done
+servebench: window 10/10 done
+{"summary": "servebench closed", "label": "autoresearch-20261018-193954-c16", "mode": "closed", "concurrency": 16, "rate": null, "tps_mean": 229.29000000000002, "ci95_pct": 0.9119579503720258, "windows": 10, "steps_per_s": 6.546665881822816, "tokens_per_step": 35.04916436999518, "context_tokens": null, "prefix_cache_hit_rate": 0.0, "ttft_p50_s": 0.4821213469840586, "tpot_p50_ms": 69.40470986689131, "failed": 0, "foreign_requests": 0, "output": "runs/autoresearch-20261018-193954/c16.json"}
+servebench suite dsv41-ladder: step c8 (run)
+servebench: closed warm-up 60 s, then 300 s in 10 windows
+servebench: window 1/10 done
+servebench: window 2/10 done
+servebench: window 3/10 done
+servebench: window 4/10 done
+servebench: window 5/10 done
+servebench: window 6/10 done
+servebench: window 7/10 done
+servebench: window 8/10 done
+servebench: window 9/10 done
+servebench: window 10/10 done
+{"summary": "servebench closed", "label": "autoresearch-20261018-193954-c8", "mode": "closed", "concurrency": 8, "rate": null, "tps_mean": 179.08666666666667, "ci95_pct": 0.6670943227391641, "windows": 10, "steps_per_s": 10.033333442672856, "tokens_per_step": 17.86910920386067, "context_tokens": null, "prefix_cache_hit_rate": 0.0, "ttft_p50_s": 0.3211766208987683, "tpot_p50_ms": 44.134875975877925, "failed": 0, "foreign_requests": 0, "output": "runs/autoresearch-20261018-193954/c8.json"}
+servebench suite dsv41-ladder: step c4 (run)
+servebench: closed warm-up 60 s, then 300 s in 10 windows
+servebench: window 1/10 done
+servebench: window 2/10 done
+servebench: window 3/10 done
+servebench: window 4/10 done
+servebench: window 5/10 done
+servebench: window 6/10 done
+servebench: window 7/10 done
+servebench: window 8/10 done
+servebench: window 9/10 done
+servebench: window 10/10 done
+{"summary": "servebench closed", "label": "autoresearch-20261018-193954-c4", "mode": "closed", "concurrency": 4, "rate": null, "tps_mean": 138.94333333333333, "ci95_pct": 1.1307825487777068, "windows": 10, "steps_per_s": 15.38333149055855, "tokens_per_step": 9.041899511509605, "context_tokens": null, "prefix_cache_hit_rate": 0.0, "ttft_p50_s": 0.219943170202896, "tpot_p50_ms": 29.143197627226805, "failed": 0, "foreign_requests": 0, "output": "runs/autoresearch-20261018-193954/c4.json"}
+servebench suite dsv41-ladder: step c2 (run)
+servebench: closed warm-up 60 s, then 300 s in 10 windows
+servebench: window 1/10 done
+servebench: window 2/10 done
+servebench: window 3/10 done
+servebench: window 4/10 done
+servebench: window 5/10 done
+servebench: window 6/10 done
+servebench: window 7/10 done
+servebench: window 8/10 done
+servebench: window 9/10 done
+servebench: window 10/10 done
+{"summary": "servebench closed", "label": "autoresearch-20261018-193954-c2", "mode": "closed", "concurrency": 2, "rate": null, "tps_mean": 104.11666666666667, "ci95_pct": 1.9857139752503172, "windows": 10, "steps_per_s": 23.293355470451313, "tokens_per_step": 4.47584791733223, "context_tokens": null, "prefix_cache_hit_rate": 0.0, "ttft_p50_s": 0.15517653804272413, "tpot_p50_ms": 19.35520501551675, "failed": 0, "foreign_requests": 0, "output": "runs/autoresearch-20261018-193954/c2.json"}
+servebench suite dsv41-ladder: step c1 (run)
+servebench: closed warm-up 60 s, then 300 s in 10 windows
+servebench: window 1/10 done
+servebench: window 2/10 done
+servebench: window 3/10 done
+servebench: window 4/10 done
+servebench: window 5/10 done
+servebench: window 6/10 done
+servebench: window 7/10 done
+servebench: window 8/10 done
+servebench: window 9/10 done
+servebench: window 10/10 done
+{"summary": "servebench closed", "label": "autoresearch-20261018-193954-c1", "mode": "closed", "concurrency": 1, "rate": null, "tps_mean": 72.79666666666667, "ci95_pct": 3.3709743203609825, "windows": 10, "steps_per_s": 31.68999829813249, "tokens_per_step": 2.29959166322976, "context_tokens": null, "prefix_cache_hit_rate": 0.0, "ttft_p50_s": 0.09306040313094854, "tpot_p50_ms": 13.815144521604275, "failed": 0, "foreign_requests": 0, "output": "runs/autoresearch-20261018-193954/c1.json"}
+servebench suite dsv41-ladder: step prefill (prefill)
+servebench: prefill 32768 repeat 1/3: 5700 tok/s
+servebench: prefill 131072 repeat 1/3: 5645 tok/s
+servebench: prefill 262144 repeat 1/3: 5370 tok/s
+servebench: prefill 524288 repeat 1/3: 4881 tok/s
+servebench: prefill 32768 repeat 2/3: 5704 tok/s
+servebench: prefill 131072 repeat 2/3: 5647 tok/s
+servebench: prefill 262144 repeat 2/3: 5391 tok/s
+servebench: prefill 524288 repeat 2/3: 4880 tok/s
+servebench: prefill 32768 repeat 3/3: 5750 tok/s
+servebench: prefill 131072 repeat 3/3: 5691 tok/s
+servebench: prefill 262144 repeat 3/3: 5388 tok/s
+{"summary": "servebench prefill", "label": "autoresearch-20261018-193954-prefill", "tps": {"32768": 5718.350166630687, "131072": 5660.905403102525, "262144": 5383.279768049716, "524288": 4879.707913396088}, "ci95_pct": {"32768": 1.2089799928421996, "131072": 1.1401944868338871, "262144": 0.5174209688401834, "524288": 0.04768264512401818}, "skipped": [], "failed": 0, "output": "runs/autoresearch-20261018-193954/prefill.json"}
+servebench: prefill 524288 repeat 3/3: 4879 tok/s
+servebench suite dsv41-ladder: step prefill-short (prefill)
+servebench: prefill 8192 repeat 1/6: 5245 tok/s
+servebench: prefill 16384 repeat 1/6: 5548 tok/s
+servebench: prefill 8192 repeat 2/6: 5143 tok/s
+servebench: prefill 16384 repeat 2/6: 5563 tok/s
+servebench: prefill 8192 repeat 3/6: 5200 tok/s
+servebench: prefill 16384 repeat 3/6: 5564 tok/s
+servebench: prefill 8192 repeat 4/6: 5154 tok/s
+servebench: prefill 16384 repeat 4/6: 5479 tok/s
+servebench: prefill 8192 repeat 5/6: 5144 tok/s
+servebench: prefill 16384 repeat 5/6: 5556 tok/s
+servebench: prefill 8192 repeat 6/6: 5185 tok/s
+{"summary": "servebench prefill", "label": "autoresearch-20261018-193954-prefill-short", "tps": {"8192": 5178.1795296673, "16384": 5548.217162610824}, "ci95_pct": {"8192": 0.807930548810398, "16384": 0.6679664929946855}, "skipped": [], "failed": 0, "output": "runs/autoresearch-20261018-193954/prefill-short.json"}
+{"summary": "servebench suite", "suite": "dsv41-ladder", "suite_sha256": "b7fc74aeaea4", "label": "autoresearch-20261018-193954", "out": "runs/autoresearch-20261018-193954", "seconds": {"c16": 371.4, "c8": 366.0, "c4": 364.9, "c2": 362.2, "c1": 362.7, "prefill": 564.8, "prefill-short": 27.9}, "failed": []}
+servebench: prefill 16384 repeat 6/6: 5579 tok/s

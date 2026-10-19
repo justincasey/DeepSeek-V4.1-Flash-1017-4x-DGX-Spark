@@ -1,0 +1,168 @@
+{
+ "schema": "servebench-prefill/1",
+ "tool": {
+  "name": "servebench",
+  "version": "0.1.0"
+ },
+ "started_utc": "2026-10-19T04:14:19+00:00",
+ "label": "autoresearch-20261018-223207-prefill-short",
+ "server": {
+  "url": "http://127.0.0.1:8000",
+  "model": "deepseek-v4.1-flash",
+  "max_model_len": 1048576
+ },
+ "workload": {
+  "sizes": [
+   8192,
+   16384
+  ],
+  "repeats": 6,
+  "skipped": [],
+  "extra_body": {},
+  "question": "Summarize the document above in one sentence."
+ },
+ "prefill": [
+  {
+   "size": 8192,
+   "prompt_tokens": 8255,
+   "tps": {
+    "n": 6,
+    "mean": 5827.053697277682,
+    "sd": 42.305812062428515,
+    "min": 5755.886205835988,
+    "max": 5874.284770451157,
+    "ci95": 44.404449184963,
+    "ci95_pct": 0.7620394712632927
+   },
+   "samples": [
+    5804.67,
+    5755.89,
+    5835.82,
+    5859.44,
+    5874.28,
+    5832.23
+   ],
+   "failed": 0
+  },
+  {
+   "size": 16384,
+   "prompt_tokens": 16520,
+   "tps": {
+    "n": 6,
+    "mean": 5885.688014200213,
+    "sd": 65.70448200761822,
+    "min": 5763.280575696668,
+    "max": 5951.091771492683,
+    "ci95": 68.96384185289456,
+    "ci95_pct": 1.1717209897382885
+   },
+   "samples": [
+    5878.84,
+    5921.61,
+    5882.38,
+    5916.93,
+    5951.09,
+    5763.28
+   ],
+   "failed": 0
+  }
+ ],
+ "samples": [
+  {
+   "size": 8192,
+   "repeat": 0,
+   "prompt_tokens": 8255,
+   "ttft_s": 1.4221306249964982,
+   "tps": 5804.670720750653,
+   "error": null
+  },
+  {
+   "size": 16384,
+   "repeat": 0,
+   "prompt_tokens": 16520,
+   "ttft_s": 2.8100787189323455,
+   "tps": 5878.838869779623,
+   "error": null
+  },
+  {
+   "size": 8192,
+   "repeat": 1,
+   "prompt_tokens": 8234,
+   "ttft_s": 1.430535577936098,
+   "tps": 5755.886205835988,
+   "error": null
+  },
+  {
+   "size": 16384,
+   "repeat": 1,
+   "prompt_tokens": 16348,
+   "ttft_s": 2.760737692937255,
+   "tps": 5921.605678736807,
+   "error": null
+  },
+  {
+   "size": 8192,
+   "repeat": 2,
+   "prompt_tokens": 8229,
+   "ttft_s": 1.410085457144305,
+   "tps": 5835.81651616017,
+   "error": null
+  },
+  {
+   "size": 16384,
+   "repeat": 2,
+   "prompt_tokens": 16437,
+   "ttft_s": 2.7942777920980006,
+   "tps": 5882.378640549824,
+   "error": null
+  },
+  {
+   "size": 8192,
+   "repeat": 3,
+   "prompt_tokens": 8328,
+   "ttft_s": 1.421296529006213,
+   "tps": 5859.4387800433415,
+   "error": null
+  },
+  {
+   "size": 16384,
+   "repeat": 3,
+   "prompt_tokens": 16536,
+   "ttft_s": 2.7946913139894605,
+   "tps": 5916.932548945676,
+   "error": null
+  },
+  {
+   "size": 8192,
+   "repeat": 4,
+   "prompt_tokens": 8328,
+   "ttft_s": 1.4177045079413801,
+   "tps": 5874.284770451157,
+   "error": null
+  },
+  {
+   "size": 16384,
+   "repeat": 4,
+   "prompt_tokens": 16392,
+   "ttft_s": 2.7544525659177452,
+   "tps": 5951.091771492683,
+   "error": null
+  },
+  {
+   "size": 8192,
+   "repeat": 5,
+   "prompt_tokens": 8227,
+   "ttft_s": 1.410610827151686,
+   "tps": 5832.225190424781,
+   "error": null
+  },
+  {
+   "size": 16384,
+   "repeat": 5,
+   "prompt_tokens": 16498,
+   "ttft_s": 2.862605730071664,
+   "tps": 5763.280575696668,
+   "error": null
+  }
+ ]
+}

@@ -422,6 +422,25 @@ reports, per prefill size, the chunk count and the chunks docker/0005 skips (der
 non-final chunk ends on a threshold multiple and at least 200 rows follow it at k=6). `EXTRA_DOCKER_ARGS="-e
 DSV41_CED_SKIP_NONFINAL=0"` turns the skip off.
 
+### Batched tokens x CED skip (servebench, 2026-10-18)
+
+MAX_NUM_BATCHED_TOKENS 8192 / 12288 / 16384 / 20480 / 24576, each with the CED non-final skip on and off, one boot
+per config, recorded with findings and recommendations (pending manual review, defaults unchanged) in
+[`bench/records/2026-10-18-servebench-sweep`](bench/records/2026-10-18-servebench-sweep/summary.md). In short:
+
+| MNBT | prefill gmean 8K-512K, skip on / off (tok/s) | skip gain | c1 / c2 / c4 / c8 / c16 tok/s (skip on) | mem_min GiB |
+|---|---:|---:|---:|---:|
+| 8192 | 5,609 / 5,387 | +4.1% | 72.9 / 104.3 / 139.1 / 179.6 / 229.6 | 19.2 |
+| 12288 | 5,918 / 5,776 | +2.5% | 72.6 / 103.9 / 138.8 / 179.7 / 228.8 | 17.9 |
+| 16384 | 5,988 / 5,868 | +2.1% | 72.4 / 104.1 / 138.1 / 179.4 / 229.1 | 16.0 |
+| 20480 | 6,095 / 6,052 | +0.7% | 72.7 / 103.6 / 138.9 / 179.1 / 229.1 | 14.9 |
+| 24576 (default) | 6,125 / 6,061 | +1.1% | 72.7 / 103.7 / 138.8 / 178.2 / 229.1 | 13.4 |
+
+Decode is flat across all ten configs (spread <= 0.9%, inside each level's interval). Prefill rises with the
+budget; the skip saves a roughly fixed 40-90 ms per skipped chunk, so its gain falls as the budget grows and
+never matches the next budget step. Against Christopher Owen's r6v release (his ring and session) the defaults
+read c1 +2.3%, c8 -3.9%, c16 -6.0%, prefill +6 to +9%; the c8/c16 gap does not move with either knob.
+
 ### Current defaults against r6v
 
 Measured on 2026-10-18 at the 2,200 MHz clock lock with the same client and settings as the r6v record

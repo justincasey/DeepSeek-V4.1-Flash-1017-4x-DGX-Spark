@@ -1,0 +1,19 @@
+21:49:28 KV snapshot saved in 5s: {"saved":true,"epoch":"62a6908597a44ce2a4f3a03ea29c79d6","ranks":4,"bytes_per_rank":11274207232,"cached_blocks":15399,"hash_entries":15399,"seconds":4.158,"path":"/cache/dsv41/kv-snapshots/scheduler-084a92e7c9eb8f679ea64945"}
+[r0] stopped
+[r1] stopped
+[r2] stopped
+[r3] stopped
+21:49:46 prepared: stopped, caches dropped, clocks, guards
+startup memguard active for dsv41-1017 (threshold 5 GiB, interval 0.25s, mode prelaunch)
+startup memguard active for dsv41-1017 (threshold 5 GiB, interval 0.25s, mode prelaunch)
+startup memguard active for dsv41-1017 (threshold 5 GiB, interval 0.25s, mode prelaunch)
+21:49:47 ranks 3 2 1 started under their startup memory guards
+startup memguard active for dsv41-1017 (threshold 5 GiB, interval 0.25s, mode prelaunch)
+21:49:48 rank 0 started on 192.168.1.121 under its startup memory guard
+21:49:48 waiting for http://192.168.1.121:8000 (up to 3600s; first boot prepares the TileLang kernels into /home/spark/.cache/dsv41-ds41f)
+21:52:00 up after 132s: http://192.168.1.121:8000/v1
+[r0] steady memguard active for dsv41-1017 (threshold 3 GiB, interval 2s, mode running)
+[r1] steady memguard active for dsv41-1017 (threshold 3 GiB, interval 2s, mode running)
+[r2] steady memguard active for dsv41-1017 (threshold 3 GiB, interval 2s, mode running)
+[r3] steady memguard active for dsv41-1017 (threshold 3 GiB, interval 2s, mode running)
+21:52:01 smoke: OK (17*23=391)

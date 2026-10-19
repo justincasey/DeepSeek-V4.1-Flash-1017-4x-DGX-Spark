@@ -1,0 +1,12 @@
+{
+ "recipe_commit": "048113ef843bb66ba9cbbfe2879a9ab6ee09fcb5",
+ "recipe_dirty_paths": 1,
+ "docker_sha256": "a405616bc3952d0c49f97f926ecefa95f02832bbff08dc8baf6a789e0292be39",
+ "servebench_rev": "2d2b2328a92a9dca9a73ce7acd56e188741f30a8",
+ "client_python": "3.12.3",
+ "max_num_batched_tokens": 8192,
+ "long_prefill_token_threshold": 8080,
+ "max_num_seqs": 16,
+ "num_speculative_tokens": 6,
+ "ced_skip_nonfinal": 1
+}
