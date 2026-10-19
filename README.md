@@ -441,6 +441,10 @@ budget; the skip saves a roughly fixed 40-90 ms per skipped chunk, so its gain f
 never matches the next budget step. Against Christopher Owen's r6v release (his ring and session) the defaults
 read c1 +2.3%, c8 -3.9%, c16 -6.0%, prefill +6 to +9%; the c8/c16 gap does not move with either knob.
 
+Follow-up ([`bench/records/2026-10-18-servebench-draft-budget`](bench/records/2026-10-18-servebench-draft-budget/summary.md),
+pending review): `ADAPTIVE_VERIFICATION_ROW_COST` 0.01 → 0.035 gives c4 +1.5%, c8 +2.8% and about 10% lower c8/c16
+TTFT, with c1, c16 and prefill level; k=5 at 0.035 is level with k=6. Neither closes the c16 gap to r6v.
+
 ### Current defaults against r6v
 
 Measured on 2026-10-18 at the 2,200 MHz clock lock with the same client and settings as the r6v record

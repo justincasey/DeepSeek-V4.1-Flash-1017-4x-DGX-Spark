@@ -1,0 +1,177 @@
+{
+ "schema": "servebench-suite/1",
+ "suite": {
+  "name": "dsv41-ladder",
+  "version": 1,
+  "description": "servebench (spark-ds41f 2d2b2328, vendored unmodified in bench/servebench) as Christopher Owen runs it, for this recipe's concurrency ladder and the MAX_NUM_BATCHED_TOKENS x CED-skip sweep: closed loops at 16, 8, 4, 2 and 1 streams over the 256 distinct prompts (a fresh cache salt per request, exactly 256 output tokens, greedy, thinking off; 60 s warm-up, 300 s measured, the release suite's c16/c8 and single-stream's c1 arguments), then real-text cold prefill with the release suite's sizes without 1M (same seeds, so the same documents as his release runs at 32K-512K) and a short-prompt step at 8K and 16K, where the chunk count changes across the sweep. No engine grid: production servers do not expose the dev-mode RPC.",
+  "steps": [
+   {
+    "id": "c16",
+    "command": "run",
+    "args": {
+     "mode": "closed",
+     "concurrency": 16,
+     "warmup": 60,
+     "duration": 300,
+     "extra_body": {
+      "chat_template_kwargs": {
+       "thinking": false
+      }
+     }
+    }
+   },
+   {
+    "id": "c8",
+    "command": "run",
+    "args": {
+     "mode": "closed",
+     "concurrency": 8,
+     "warmup": 60,
+     "duration": 300,
+     "extra_body": {
+      "chat_template_kwargs": {
+       "thinking": false
+      }
+     }
+    }
+   },
+   {
+    "id": "c4",
+    "command": "run",
+    "args": {
+     "mode": "closed",
+     "concurrency": 4,
+     "warmup": 60,
+     "duration": 300,
+     "extra_body": {
+      "chat_template_kwargs": {
+       "thinking": false
+      }
+     }
+    }
+   },
+   {
+    "id": "c2",
+    "command": "run",
+    "args": {
+     "mode": "closed",
+     "concurrency": 2,
+     "warmup": 60,
+     "duration": 300,
+     "extra_body": {
+      "chat_template_kwargs": {
+       "thinking": false
+      }
+     }
+    }
+   },
+   {
+    "id": "c1",
+    "command": "run",
+    "args": {
+     "mode": "closed",
+     "concurrency": 1,
+     "warmup": 60,
+     "duration": 300,
+     "extra_body": {
+      "chat_template_kwargs": {
+       "thinking": false
+      }
+     }
+    }
+   },
+   {
+    "id": "prefill",
+    "command": "prefill",
+    "args": {
+     "sizes": [
+      32768,
+      131072,
+      262144,
+      524288
+     ],
+     "repeats": 3
+    }
+   },
+   {
+    "id": "prefill-short",
+    "command": "prefill",
+    "args": {
+     "sizes": [
+      8192,
+      16384
+     ],
+     "repeats": 6
+    }
+   }
+  ]
+ },
+ "suite_sha256": "b7fc74aeaea4f80d319bb37c371dab538d25e2868d3ccb0a9c2f0d48a82185f8",
+ "label": "autoresearch-20261019-012709",
+ "corpus": null,
+ "started_utc": "2026-10-19T06:29:45+00:00",
+ "steps": [
+  {
+   "id": "c16",
+   "command": "run",
+   "output": "c16.json",
+   "exit": 0,
+   "seconds": 370.0
+  },
+  {
+   "id": "c8",
+   "command": "run",
+   "output": "c8.json",
+   "exit": 0,
+   "seconds": 368.1
+  },
+  {
+   "id": "c4",
+   "command": "run",
+   "output": "c4.json",
+   "exit": 0,
+   "seconds": 365.9
+  },
+  {
+   "id": "c2",
+   "command": "run",
+   "output": "c2.json",
+   "exit": 0,
+   "seconds": 360.7
+  },
+  {
+   "id": "c1",
+   "command": "run",
+   "output": "c1.json",
+   "exit": 0,
+   "seconds": 360.0
+  },
+  {
+   "id": "prefill",
+   "command": "prefill",
+   "output": "prefill.json",
+   "exit": 0,
+   "seconds": 503.2
+  },
+  {
+   "id": "prefill-short",
+   "command": "prefill",
+   "output": "prefill-short.json",
+   "exit": 0,
+   "seconds": 24.3
+  }
+ ],
+ "metadata": {
+  "recipe_commit": "8e8786a05706a164c217ddd62dd89b2601c5921d",
+  "recipe_dirty_paths": 1,
+  "docker_sha256": "a405616bc3952d0c49f97f926ecefa95f02832bbff08dc8baf6a789e0292be39",
+  "servebench_rev": "2d2b2328a92a9dca9a73ce7acd56e188741f30a8",
+  "client_python": "3.12.3",
+  "max_num_batched_tokens": 24576,
+  "long_prefill_token_threshold": 24480,
+  "max_num_seqs": 16,
+  "num_speculative_tokens": 5,
+  "ced_skip_nonfinal": 1
+ },
+ "finished_utc": "2026-10-19T07:08:57+00:00"
+}
