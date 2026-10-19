@@ -437,8 +437,9 @@ per config, recorded with findings and recommendations (pending manual review, d
 | 24576 (default) | 6,125 / 6,061 | +1.1% | 72.7 / 103.7 / 138.8 / 178.2 / 229.1 | 13.4 |
 
 Decode is flat across all ten configs (spread <= 0.9%, inside each level's interval). Prefill rises with the
-budget; the skip saves a roughly fixed 40-90 ms per skipped chunk, so its gain falls as the budget grows and
-never matches the next budget step. Against Christopher Owen's r6v release (his ring and session) the defaults
+budget; the skip saves a roughly fixed 40-90 ms per skipped chunk, so its gain falls as the budget grows. It is
+worth about one budget step at 12288 and above (with the skip, 12288 and 20480 are within 1% of the next step
+without it) and less than one at 8192; the sweep record's finding 4 overstates this. Against Christopher Owen's r6v release (his ring and session) the defaults
 read c1 +2.3%, c8 -3.9%, c16 -6.0%, prefill +6 to +9%; the c8/c16 gap does not move with either knob.
 
 Follow-up ([`bench/records/2026-10-18-servebench-draft-budget`](bench/records/2026-10-18-servebench-draft-budget/summary.md),
