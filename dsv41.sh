@@ -84,7 +84,7 @@ unset _CALLER _k _v _line
 : "${COMPILATION_CONFIG:=}"
 [[ -v GENERATION_DEFAULTS ]] || GENERATION_DEFAULTS='{"temperature":1.0,"top_p":1.0}'   # empty = vLLM's own
 : "${TEXT_ONLY:=0}"
-: "${MAX_IMAGES:=4}"
+: "${MAX_IMAGES:=8}"
 : "${DISPLAY_CARVEOUT:=0}"
 : "${DRI_CARD=/dev/dri/by-path/pci-000f:01:00.0-card}"
 : "${CPUSET=5-9,15-19}"
