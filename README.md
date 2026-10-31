@@ -228,7 +228,7 @@ port. The key never appears in a process argv or in `print-serve`: `start` passe
 - **Tool calling**: `--tool-call-parser deepseek_v41 --enable-auto-tool-choice`; `tool_choice` `auto`, `none`,
   `required` and named functions; 1017 tool namespaces and the 1017 tool-loop turn rule.
 - **Structured output**: `response_format` (JSON schema / JSON object).
-- **Image input**: `image_url` content blocks, up to `MAX_IMAGES` (4) per prompt; DeepSeek's encoder places the
+- **Image input**: `image_url` content blocks, up to `MAX_IMAGES` (8) per prompt; DeepSeek's encoder places the
   image tokens. `TEXT_ONLY=1` drops image input.
 - **Context**: 1,048,576 tokens per request (`MAX_MODEL_LEN`), `MAX_NUM_SEQS` (16) sequences at once; more
   requests queue.
@@ -285,7 +285,7 @@ key; the groups:
 | Image and fabric | `IMAGE`, `BUILD_DIR`, `CACHE_DIR`, `CONTAINER`, `MASTER_PORT` | `dsv41-1017-ds41f:r6w`; `CACHE_DIR` is mounted at `/cache` on every node and keeps the JIT/TileLang/Triton caches, weight snapshots and KV snapshots (~83 GiB per node) across boots; `CONTAINER` also names the guard unit (`$CONTAINER-memguard.service`); rendezvous on port 9999 |
 | Serving | `SERVED_NAME`, `HOST`, `PORT`, `API_KEY` | `deepseek-v4.1-flash` on `0.0.0.0:8000`; `API_KEY` empty = no authentication |
 | Sizing | `MAX_MODEL_LEN`, `MAX_NUM_SEQS`, `MAX_NUM_BATCHED_TOKENS`, `GPU_MEMORY_UTILIZATION`, `KV_CACHE_MEMORY_BYTES` | 1,048,576 tokens, 16 sequences, 24,576 tokens per step (the long-prefill threshold is this minus the decode rows, `MAX_NUM_SEQS` × (k+1): 24,464 at the defaults); a fixed 10.5 GiB KV budget per rank (`11274289152`; empty = vLLM profiling); utilization 0.82 is always passed and then only gates vLLM's startup free-memory check |
-| Engine | `PREFIX_CACHING`, `PREFIX_CACHE_RETENTION_INTERVAL`, `KERNEL_BACKEND`, `GENERATION_DEFAULTS`, `TEXT_ONLY`, `MAX_IMAGES` | prefix caching on with retention interval 8192; `tilelang` (the TileLang SM121 family) or `b12x` (spark-ds41f's pre-r6 backend, in the same image); `{"temperature":1.0,"top_p":1.0}`; images on, 4 per prompt |
+| Engine | `PREFIX_CACHING`, `PREFIX_CACHE_RETENTION_INTERVAL`, `KERNEL_BACKEND`, `GENERATION_DEFAULTS`, `TEXT_ONLY`, `MAX_IMAGES` | prefix caching on with retention interval 8192; `tilelang` (the TileLang SM121 family) or `b12x` (spark-ds41f's pre-r6 backend, in the same image); `{"temperature":1.0,"top_p":1.0}`; images on, 8 per prompt |
 | Boot and stop | `WEIGHT_SNAPSHOT`, `KV_PERSIST`, `KV_SAVE_TIMEOUT`, `WAIT_TIMEOUT`, `STOP_GRACE` | weight snapshots on: each rank snapshots its loaded weights on the first boot of a build and configuration and restores them on later boots (`0` = always read the checkpoint; [Quick boot](#quick-boot)); persistent prefix cache on: `stop`/`restart` save the prefix KV cache, waiting up to 120 s, and `start` restores it (`0` = cold cache after every restart; [Persistent prefix cache](#persistent-prefix-cache)); `start` waits up to 3600 s; `stop` gives vLLM 5 s to exit before SIGKILL (its graceful exit took ~14 s) |
 | DSpark and CUDA graphs | `DSPARK`, `NUM_SPECULATIVE_TOKENS`, `DRAFT_SAMPLE_METHOD`, `ADAPTIVE_VERIFICATION_ROW_COST`, `EAGER`, `COMPILATION_CONFIG` | DSpark on (the drafter ships in the checkpoint), k=6, greedy drafts, block verification, adaptive verification by spark-ds41f's linear draft budget at row cost 0.01 (`docker/0007`; no boot-time profiling; empty = off); `FULL_AND_PIECEWISE` graphs on spark-ds41f's capture ladder up to `MAX_NUM_SEQS` × (k+1) rows (112 at the defaults); `EAGER=1` disables graphs; `COMPILATION_CONFIG` replaces the compilation JSON verbatim |
 | Host resources | `CPUSET`, `CONTAINER_MEMORY`, `DRI_CARD`, `DISPLAY_CARVEOUT`, `GPU_CLOCKS` | ranks pinned to GB10's ten Cortex-X925 cores `5-9,15-19` (`doctor` checks them per node); `--memory`/`--memory-swap` 112g; the nvidia DRM card bound at `/dev/dri/card0`; embedding and head in the display carve-out off (`1` needs `DRI_CARD` and `nvidia-drm` modeset); empty disables each of these. `GPU_CLOCKS=2200` (site policy) locks every node's GPU at 2,200 MHz with `nvidia-smi -lgc` at `start` (2,184-2,197 MHz under load); `keep` leaves the clocks as they are |
@@ -627,10 +627,12 @@ Their numbers, from their harnesses and sites, not measured here and not directl
   [docs/findings/2026-10-18-thinking-mode-output-corruption.md](docs/findings/2026-10-18-thinking-mode-output-corruption.md).
   The current defaults leave it unchanged: the corruption probe (`bench/corruption_probe.py`) reports 9/13 on r6v and
   on them.
-- **Image token in text → 400.** A message whose text contains DeepSeek's literal image token
-  (`<｜deepseek_image｜>`) is rejected: "Images should be provided as image content blocks". This is DeepSeek's
-  encoder validation, applied to every role (spark-ds41f's vLLM 0178 follows it). Agents that paste DeepSeek source
-  code or docs into a prompt or tool result hit it.
+- **Image token in text → 400.** A message whose text contains DeepSeek's literal image placeholder (the word
+  `deepseek_image` between the fullwidth-bar delimiters `<｜` and `｜>`, written here split so this file is safe to
+  paste) is rejected: "Images should be provided as image content blocks". This is DeepSeek's encoder validation,
+  applied to every role (spark-ds41f's vLLM 0178 follows it). Agents that paste DeepSeek source code or docs into a
+  prompt or tool result hit it, and since the text stays in the conversation, every later request of that session
+  fails too: start a new session or go back to before the message that carried it.
 - **First boot is slow.** Each rank prepares its kernels before memory profiling into `CACHE_DIR` and writes its
   weight snapshot: the first r6v boot took 396 s to the API, and a boot that writes the snapshots ~184 s here. Later
   boots reuse both; since `docker/0007-*.patch` nothing is profiled for DSpark at boot. Keep `CACHE_DIR` on
