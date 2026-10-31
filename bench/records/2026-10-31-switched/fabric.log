@@ -1,0 +1,58 @@
+# switch: /interface ethernet print stats, reset before the run (bench + conformance)
+                   name:     qsfp56-dd-1-1     qsfp56-dd-2-1     qsfp56-dd-3-1     qsfp56-dd-4-1
+               rx-pause:                 0                 6                 0                 8
+               tx-pause:                12                 0                 2                 0
+       tx-queue0-packet:                 0                 0                 0                 0
+       tx-queue1-packet:             8 995             8 997             9 007             9 028
+       tx-queue2-packet:                 0                 0                 0                 0
+       tx-queue3-packet:       337 091 614       337 619 005       338 443 499       338 136 731
+       tx-queue4-packet:                 0                 0                 0                 0
+       tx-queue5-packet:                 0                 0                 0                 0
+       tx-queue6-packet:             3 835             2 736             3 952             2 512
+       tx-queue7-packet:                 0                 0                 0                 0
+         tx-drop-packet:                 0                 0                 0                 0
+           tx-drop-byte:                 0                 0                 0                 0
+  tx-drop-queue0-packet:                 0                 0                 0                 0
+  tx-drop-queue1-packet:                 0                 0                 0                 0
+  tx-drop-queue2-packet:                 0                 0                 0                 0
+  tx-drop-queue3-packet:                 0                 0                 0                 0
+  tx-drop-queue4-packet:                 0                 0                 0                 0
+  tx-drop-queue5-packet:                 0                 0                 0                 0
+  tx-drop-queue6-packet:                 0                 0                 0                 0
+  tx-drop-queue7-packet:                 0                 0                 0                 0
+    tx-drop-queue0-byte:                 0                 0                 0                 0
+    tx-drop-queue1-byte:                 0                 0                 0                 0
+    tx-drop-queue2-byte:                 0                 0                 0                 0
+    tx-drop-queue3-byte:                 0                 0                 0                 0
+    tx-drop-queue4-byte:                 0                 0                 0                 0
+    tx-drop-queue5-byte:                 0                 0                 0                 0
+    tx-drop-queue6-byte:                 0                 0                 0                 0
+    tx-drop-queue7-byte:                 0                 0                 0                 0
+
+# nodes: rdma statistic / ethtool -S, before the run
+spark-ffc9 rocep1s0f1: out_of_sequence 153499 packet_seq_err 17307 local_ack_timeout_err 0 rp_cnp_handled 30801 np_ecn_marked_roce_packets 20651861 np_cnp_sent 1413119
+spark-ffc9 roceP2p1s0f1: out_of_sequence 0 packet_seq_err 18691 local_ack_timeout_err 0 rp_cnp_handled 30801 np_ecn_marked_roce_packets 20651861 np_cnp_sent 1413119
+     rx_prio3_pause: 244200      tx_prio3_pause: 48140
+spark-ea79 rocep1s0f1: out_of_sequence 34773 packet_seq_err 49448 local_ack_timeout_err 0 rp_cnp_handled 474149 np_ecn_marked_roce_packets 3694 np_cnp_sent 59901
+spark-ea79 roceP2p1s0f1: out_of_sequence 36249 packet_seq_err 0 local_ack_timeout_err 0 rp_cnp_handled 474149 np_ecn_marked_roce_packets 3694 np_cnp_sent 59901
+     rx_prio3_pause: 244197      tx_prio3_pause: 15
+spark-9e04 rocep1s0f1: out_of_sequence 0 packet_seq_err 71050 local_ack_timeout_err 0 rp_cnp_handled 501198 np_ecn_marked_roce_packets 8421 np_cnp_sent 634
+spark-9e04 roceP2p1s0f1: out_of_sequence 0 packet_seq_err 17558 local_ack_timeout_err 0 rp_cnp_handled 501198 np_ecn_marked_roce_packets 8421 np_cnp_sent 634
+     rx_prio3_pause: 244188      tx_prio3_pause: 0
+spark-84b6 rocep1s0f1: out_of_sequence 0 packet_seq_err 50466 local_ack_timeout_err 0 rp_cnp_handled 468590 np_ecn_marked_roce_packets 14670 np_cnp_sent 1084
+spark-84b6 roceP2p1s0f1: out_of_sequence 0 packet_seq_err 0 local_ack_timeout_err 0 rp_cnp_handled 468590 np_ecn_marked_roce_packets 14670 np_cnp_sent 1084
+     rx_prio3_pause: 244526      tx_prio3_pause: 0
+
+# nodes: after the run
+spark-ffc9 rocep1s0f1: out_of_sequence 153499 packet_seq_err 17307 local_ack_timeout_err 0 rp_cnp_handled 34636 np_ecn_marked_roce_packets 20683375 np_cnp_sent 1415446
+spark-ffc9 roceP2p1s0f1: out_of_sequence 0 packet_seq_err 18691 local_ack_timeout_err 0 rp_cnp_handled 34636 np_ecn_marked_roce_packets 20683375 np_cnp_sent 1415446
+     rx_prio3_pause: 244212      tx_prio3_pause: 48140
+spark-ea79 rocep1s0f1: out_of_sequence 34773 packet_seq_err 49448 local_ack_timeout_err 0 rp_cnp_handled 476885 np_ecn_marked_roce_packets 37087 np_cnp_sent 62406
+spark-ea79 roceP2p1s0f1: out_of_sequence 36249 packet_seq_err 0 local_ack_timeout_err 0 rp_cnp_handled 476885 np_ecn_marked_roce_packets 37087 np_cnp_sent 62406
+     rx_prio3_pause: 244197      tx_prio3_pause: 21
+spark-9e04 rocep1s0f1: out_of_sequence 0 packet_seq_err 71050 local_ack_timeout_err 0 rp_cnp_handled 505150 np_ecn_marked_roce_packets 47614 np_cnp_sent 3555
+spark-9e04 roceP2p1s0f1: out_of_sequence 0 packet_seq_err 17558 local_ack_timeout_err 0 rp_cnp_handled 505150 np_ecn_marked_roce_packets 47614 np_cnp_sent 3555
+     rx_prio3_pause: 244190      tx_prio3_pause: 0
+spark-84b6 rocep1s0f1: out_of_sequence 0 packet_seq_err 50466 local_ack_timeout_err 0 rp_cnp_handled 471102 np_ecn_marked_roce_packets 85187 np_cnp_sent 6366
+spark-84b6 roceP2p1s0f1: out_of_sequence 0 packet_seq_err 0 local_ack_timeout_err 0 rp_cnp_handled 471102 np_ecn_marked_roce_packets 85187 np_cnp_sent 6366
+     rx_prio3_pause: 244526      tx_prio3_pause: 8

@@ -1,0 +1,32 @@
+== decode -> bench/runs/switched-20261031-170110/decode
+  decode prose      c=1   agg     67.1 tok/s  per-stream    68.1  ttft 0.121  reqs 4 err 0
+  decode prose      c=8   agg    347.3 tok/s  per-stream    44.3  ttft 0.185  reqs 24 err 0
+  decode code       c=1   agg     97.7 tok/s  per-stream    99.7  ttft 0.115  reqs 6 err 0
+  decode code       c=8   agg    335.2 tok/s  per-stream    43.2  ttft 0.352  reqs 24 err 0
+  decode structured c=1   agg     87.6 tok/s  per-stream    89.6  ttft 0.140  reqs 6 err 0
+  decode structured c=8   agg    418.3 tok/s  per-stream    56.6  ttft 0.228  reqs 32 err 0
+  decode json       c=1   agg     97.2 tok/s  per-stream    99.8  ttft 0.139  reqs 6 err 0
+  decode json       c=8   agg    522.6 tok/s  per-stream    67.8  ttft 0.243  reqs 32 err 0
+
+## Decode
+
+Aggregate tok/s (median per-stream decode tok/s = (completion tokens - 1) / (last - first token time), prefill excluded); window 30.0s per cell, c streaming workers, max_tokens 512, thinking off, greedy. Tokens from usage.completion_tokens.
+
+| prompt | c=1 | c=8 |
+|---|---:|---:|
+| prose | 67.1 (68.1) | 347.3 (44.3) |
+| code | 97.7 (99.7) | 335.2 (43.2) |
+| structured | 87.6 (89.6) | 418.3 (56.6) |
+| json | 97.2 (99.8) | 522.6 (67.8) |
+
+TTFT (median over the cell's own worker requests; seconds to the first content delta at concurrency c):
+
+| prompt | c=1 | c=8 |
+|---|---:|---:|
+| prose | 0.121 | 0.185 |
+| code | 0.115 | 0.352 |
+| structured | 0.140 | 0.228 |
+| json | 0.139 | 0.243 |
+
+_decode: ok (2026-10-31T17:02:44-0500)_
+

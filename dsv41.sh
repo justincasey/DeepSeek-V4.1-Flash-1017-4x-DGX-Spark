@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# dsv41.sh: DeepSeek-V4.1-Flash-1017 on four DGX Sparks, TP4 over the switchless ring, on Christopher Owen's
-# spark-ds41f engine (r6w: vLLM + TileLang kernels + sparknet one-shot collectives + patched NCCL, docker/Dockerfile).
+# dsv41.sh: DeepSeek-V4.1-Flash-1017 on four DGX Sparks, TP4 over a switchless QSFP ring (FABRIC=ring) or one RoCE
+# switch (FABRIC=switched), on Christopher Owen's spark-ds41f engine (r6w: vLLM + TileLang kernels + sparknet one-shot
+# collectives + patched NCCL, docker/Dockerfile).
 # Run from any control machine with key-based ssh to the four nodes. Nothing runs on the nodes outside docker,
 # except the Hugging Face client for `fetch` and the memory guard (a systemd unit per node, see start).
 #
 # Usage: ./dsv41.sh <command> [args]
-#   doctor               read-only: ring (HCAs, GID indices, MTU), ssh, docker, image, GPU idle, memory, page size,
-#                        sysctls, fast cores, DRM card, sudo/systemd-run, checkpoint, Engram shard layout
-#   fetch                download the pinned checkpoint on rank 0, fan it out over the ring, sha256-verify every node
+#   doctor               read-only: fabric (HCAs, GID indices, MTU, peer reachability, PFC), ssh, docker, image, GPU
+#                        idle, memory, page size, sysctls, fast cores, DRM card, sudo/systemd-run, checkpoint, Engram
+#                        shard layout
+#   fetch                download the pinned checkpoint on rank 0, fan it out over the fabric, sha256-verify every node
 #   verify               sha256-verify the checkpoint on every node (no download)
-#   build                build the serving image on rank 0, ship it over the ring, verify the image ID everywhere
+#   build                build the serving image on rank 0, ship it over the fabric, verify the image ID everywhere
 #   start                arm a memory guard and start each rank (workers first), wait for the API, switch the
 #                        guards to steady, run smoke
 #   stop | restart | status | smoke   (stop and restart first save the prefix KV cache when KV_PERSIST=1)
@@ -22,7 +24,7 @@
 #   stop-other           run STOP_OTHER: take down the stack that normally owns these GPUs
 #   restore-other        stop this stack, then run RESTORE_OTHER
 #   print-serve RANK     print the exact memory-guard arm + docker run + vllm serve commands start runs on one rank
-#                        (no side effects; no ssh when the RING_* pins are set)
+#                        (no side effects; no ssh when the fabric pins, RING_* or SWITCH_*, are set)
 #   help
 #
 # Configuration: environment > .env > defaults below. Every key is documented in .env.example.
@@ -51,7 +53,10 @@ unset _CALLER _k _v _line
 
 # Defaults are spark-ds41f r6w at shape tp4-ring (config/cluster.json @ 2dc95329, unchanged since cbf47749), as its
 # site receipt experiments/2026-10-17-site-tp4-4k-1017 ran r6v on a stock 4 KiB kernel.
-: "${NODES:=192.168.1.121 192.168.1.122 192.168.1.123 192.168.1.18}"   # management addresses, ring cable order, rank 0 first
+: "${NODES:=192.168.1.121 192.168.1.122 192.168.1.123 192.168.1.18}"   # management addresses, rank 0 first (ring: cable order)
+: "${FABRIC:=ring}"                      # ring: four QSFP cables in a loop, no switch | switched: every rank on one RoCE switch
+: "${ROCE_TC=106}"                       # FABRIC=switched: RoCE IP traffic class byte for NCCL and sparknet (DSCP 26 << 2 | ECT),
+                                         #   the switch's lossless PFC/ECN class | empty = unmarked (best effort, lossy)
 : "${SSH_USER:=spark}"
 : "${MODELS_DIR:=/home/spark/models}"
 : "${MODEL_REPO:=deepseek-ai/DeepSeek-V4.1-Flash-1017}"
@@ -110,6 +115,11 @@ unset _CALLER _k _v _line
 
 read -r -a NODE <<<"$NODES"
 (( ${#NODE[@]} == 4 )) || { echo "NODES must list exactly four management addresses (got ${#NODE[@]})" >&2; exit 1; }
+case $FABRIC in ring|switched) ;; *) echo "FABRIC must be ring or switched (got '$FABRIC')" >&2; exit 1 ;; esac
+if [[ -n $ROCE_TC ]] && { ! [[ $ROCE_TC =~ ^[0-9]{1,3}$ ]] || (( 10#$ROCE_TC > 255 )); }; then
+  echo "ROCE_TC must be an integer from 0 to 255, or empty (got '$ROCE_TC')" >&2; exit 1
+fi
+[[ -z $ROCE_TC ]] || ROCE_TC=$(( 10#$ROCE_TC ))   # sparknet parses it with int(x, 0): no leading zeros
 MASTER=${NODE[0]}
 MODEL_DIR=$MODELS_DIR/$MODEL_NAME
 URL="http://$MASTER:$PORT"
@@ -150,10 +160,13 @@ every() {
   return $rc
 }
 
-# ── the ring ────────────────────────────────────────────────────────────────────────────────────
+# ── the fabric ──────────────────────────────────────────────────────────────────────────────────
+# FABRIC=ring: four QSFP cables in a loop, no switch; rank r reaches r-1 and r+1 over its cables and the opposite
+# rank only through a neighbour. FABRIC=switched: every rank's RoCE rails on one switch, one subnet per rail shared
+# by all four ranks, so every rank reaches every other directly on every rail.
 # Per node: every up RoCE netdev with exactly one IPv4 address, as "subnet/prefix hca netdev addr gid mtu
 # active_mtu" (gid: index of the netdev's IPv4 RoCE v2 GID, or none), plus the management netdev that routes to
-# rank 0. Devices are matched by subnet, never by name, so any port-to-neighbour cabling works.
+# rank 0. Devices are matched by subnet, never by name, so any port-to-neighbour or port-to-switch cabling works.
 SCAN_SCRIPT='
 for d in /sys/class/net/*; do
   n=${d##*/}; [ -d "$d/device/infiniband" ] || continue
@@ -175,29 +188,40 @@ done
 mg=$(ip -4 -o addr show | awk -v ip="$MASTER" "index(\$4, ip \"/\") == 1 {print \$2; exit}")
 [ -n "$mg" ] || mg=$(ip -4 -o route get "$MASTER" | sed -n "s/.* dev \([^ ]*\).*/\1/p")
 echo "@mgmt $mg"'
-# Per rank r: NETS (the subnets of the cable(s) to rank r+1, sorted, so both ends list lanes in the same order),
-# LINK (the first of them), HCA_PREV/HCA_NEXT (local HCAs towards rank r-1/r+1 in lane order), GID (the one
-# IPv4 RoCE v2 GID index of those HCAs), MGMT (bootstrap netdev), PEER_IP (rank r+1's address on LINK).
-declare -a SCAN=() MGMT=() NETS=() LINK=() PEER_IP=() HCA_PREV=() HCA_NEXT=() GID=()
-PREFIX=
+# Ring, per rank r: NETS (the subnets of the cable(s) to rank r+1, sorted, so both ends list lanes in the same
+# order), LINK (the first of them), HCA_PREV/HCA_NEXT (local HCAs towards rank r-1/r+1 in lane order).
+# Switched: RAILS (the subnets all four ranks share, sorted, so stripe i is the same subnet on every node) and, per
+# rank, RAIL_HCAS (the local HCAs on RAILS in that order). Both: GID (the one IPv4 RoCE v2 GID index of the fabric
+# HCAs), MGMT (bootstrap netdev), PREFIX (the fabric subnets' prefix length); ring only: PEER_IP (rank r+1's
+# address on LINK).
+declare -a SCAN=() MGMT=() NETS=() LINK=() PEER_IP=() HCA_PREV=() HCA_NEXT=() RAIL_HCAS=() GID=()
+PREFIX= RAILS=
 shared_nets() {
   comm -12 <(awk '$1 !~ /^@/ {print $1}' <<<"${SCAN[$1]}" | LC_ALL=C sort) <(awk '$1 !~ /^@/ {print $1}' <<<"${SCAN[$2]}" | LC_ALL=C sort) \
     | paste -sd' ' -
 }
 hcas_on() { local r=$1 net; for net in $2; do awk -v net="$net" '$1 == net {print $2; exit}' <<<"${SCAN[$r]}"; done | paste -sd, -; }
-detect_ring() {
-  local r n p net g bad=0
+# gid_on RANK NETS: the IPv4 RoCE v2 GID indices of the rank's HCAs on NETS, deduplicated (one index expected).
+gid_on() { local r=$1 net; for net in $2; do awk -v net="$net" '$1 == net {print $5; exit}' <<<"${SCAN[$r]}"; done | sort -u | paste -sd' ' -; }
+# scan_nodes: SCAN and MGMT for every rank. Returns 1 if a RoCE port does not hold exactly one IPv4 address.
+scan_nodes() {
+  local r bad=0
   for r in 0 1 2 3; do
     SCAN[$r]=$(remote "$r" "$SCAN_SCRIPT" MASTER="$MASTER") || die "ssh to ${NODE[$r]} failed"
     MGMT[$r]=$(awk '$1 == "@mgmt" {print $2}' <<<"${SCAN[$r]}")
     grep -q '^@bad' <<<"${SCAN[$r]}" && { echo "rank $r: RoCE port with !=1 IPv4 address: $(grep '^@bad' <<<"${SCAN[$r]}" | tr '\n' ' ')"; bad=1; }
   done
+  return $bad
+}
+detect_ring() {
+  local r n p net g bad=0
+  scan_nodes || bad=1
   for r in 0 1 2 3; do n=$(( (r + 1) % 4 ))
     NETS[$r]=$(shared_nets "$r" "$n"); LINK[$r]=${NETS[$r]%% *}
     [[ -n ${LINK[$r]} ]] || { echo "no cable between rank $r (${NODE[$r]}) and rank $n (${NODE[$n]}): NODES must be in cable order"; bad=1; }
   done
   for r in 0 1; do
-    [[ -z $(shared_nets "$r" $((r + 2))) ]] || { echo "rank $r and rank $((r + 2)) share a subnet: this is not a switchless ring"; bad=1; }
+    [[ -z $(shared_nets "$r" $((r + 2))) ]] || { echo "rank $r and rank $((r + 2)) share a subnet: this is not a switchless ring (a switch: FABRIC=switched)"; bad=1; }
   done
   (( bad == 0 )) || return 1
   PREFIX=${LINK[0]#*/}
@@ -207,58 +231,113 @@ detect_ring() {
     PEER_IP[$r]=$(awk -v net="${LINK[$r]}" '$1 == net {print $4; exit}' <<<"${SCAN[$n]}")   # rank n's address on cable r->n
     # NCCL and sparknet take one GID index per process: every ring HCA of the node must hold its IPv4 RoCE v2
     # address at the same index.
-    g=$(for net in ${NETS[$p]} ${NETS[$r]}; do awk -v net="$net" '$1 == net {print $5; exit}' <<<"${SCAN[$r]}"; done | sort -u | paste -sd' ' -)
+    g=$(gid_on "$r" "${NETS[$p]} ${NETS[$r]}")
     if [[ $g == none || $g == *' '* ]]; then echo "rank $r: ring HCAs have no common IPv4 RoCE v2 GID index (got: $g)"; bad=1; fi
     GID[$r]=$g
     [[ -n ${MGMT[$r]} && ${MGMT[$r]} != lo ]] || { echo "rank $r: no management route to $MASTER"; bad=1; }
   done
   return $bad
 }
-# ring_config: RoCE mapping and bootstrap interface for every rank, from RING_* pins in .env when RING_PREFIX is
-# set (no ssh), else from detect_ring. Copies over the cables (fetch, build) always scan.
-ring_config() {
-  if [[ -n ${RING_PREFIX:-} ]]; then
-    local r k
-    PREFIX=$RING_PREFIX
-    for r in 0 1 2 3; do
-      for k in RING_HCA_PREV_$r RING_HCA_NEXT_$r RING_GID_$r RING_MGMT_$r; do
-        [[ -n ${!k:-} ]] || die "RING_PREFIX is set, so $k must be set too"
-      done
-      k=RING_HCA_PREV_$r; HCA_PREV[$r]=${!k}
-      k=RING_HCA_NEXT_$r; HCA_NEXT[$r]=${!k}
-      k=RING_GID_$r; GID[$r]=${!k}
-      k=RING_MGMT_$r; MGMT[$r]=${!k}
-    done
-    return 0
-  fi
-  detect_ring
-}
-# ring_verify: after ring_config loaded RING_* pins, scan the live ring and print every pin that differs.
-# Returns 0 if all match (the arrays then hold the live values), 1 on a difference, 2 if the scan failed.
-ring_verify() {
-  local -a prev=("${HCA_PREV[@]}") next=("${HCA_NEXT[@]}") gid=("${GID[@]}") mgmt=("${MGMT[@]}")
-  local prefix=$PREFIX r bad=0
-  detect_ring || return 2
-  [[ $PREFIX == "$prefix" ]] || { echo "RING_PREFIX=$prefix, live $PREFIX"; bad=1; }
+detect_switch() {
+  local r net g dup bad=0
+  scan_nodes || bad=1
   for r in 0 1 2 3; do
-    [[ ${HCA_PREV[$r]} == "${prev[$r]}" ]] || { echo "RING_HCA_PREV_$r=${prev[$r]}, live ${HCA_PREV[$r]}"; bad=1; }
-    [[ ${HCA_NEXT[$r]} == "${next[$r]}" ]] || { echo "RING_HCA_NEXT_$r=${next[$r]}, live ${HCA_NEXT[$r]}"; bad=1; }
-    [[ ${GID[$r]} == "${gid[$r]}" ]] || { echo "RING_GID_$r=${gid[$r]}, live ${GID[$r]}"; bad=1; }
-    [[ ${MGMT[$r]} == "${mgmt[$r]}" ]] || { echo "RING_MGMT_$r=${mgmt[$r]}, live ${MGMT[$r]}"; bad=1; }
+    dup=$(awk '$1 !~ /^@/ {print $1}' <<<"${SCAN[$r]}" | LC_ALL=C sort | uniq -d | paste -sd' ' -)
+    [[ -z $dup ]] || { echo "rank $r: two RoCE ports on one subnet ($dup): each rail needs its own subnet"; bad=1; }
+  done
+  RAILS=$(for r in 0 1 2 3; do awk '$1 !~ /^@/ {print $1}' <<<"${SCAN[$r]}" | LC_ALL=C sort -u; done \
+    | LC_ALL=C sort | uniq -c | awk '$1 == 4 {print $2}' | paste -sd' ' -)
+  [[ -n $RAILS ]] || { echo "no RoCE subnet is shared by all four ranks: FABRIC=switched puts every rank on the same rail subnets"; bad=1; }
+  (( bad == 0 )) || return 1
+  PREFIX=${RAILS%% *}; PREFIX=${PREFIX#*/}
+  for net in $RAILS; do [[ ${net#*/} == "$PREFIX" ]] || { echo "rail subnets differ in prefix length ($net)"; bad=1; }; done
+  for r in 0 1 2 3; do
+    RAIL_HCAS[$r]=$(hcas_on "$r" "$RAILS")
+    # NCCL and sparknet take one GID index per process: every rail HCA must hold its IPv4 RoCE v2 address there.
+    g=$(gid_on "$r" "$RAILS")
+    if [[ $g == none || $g == *' '* ]]; then echo "rank $r: rail HCAs have no common IPv4 RoCE v2 GID index (got: $g)"; bad=1; fi
+    GID[$r]=$g
+    [[ -n ${MGMT[$r]} && ${MGMT[$r]} != lo ]] || { echo "rank $r: no management route to $MASTER"; bad=1; }
   done
   return $bad
 }
-# ring_env RANK: the rank's NCCL and sparknet fabric settings (spark-ds41f scripts/topology.py node_environment):
-# NCCL gets the node's ring HCAs as an exact-match set, sparknet each neighbour rank's HCAs in lane order.
-ring_env() {
+detect_fabric() { if [[ $FABRIC == switched ]]; then detect_switch; else detect_ring; fi; }
+# fabric_pinned: the FABRIC's pins are set in .env (RING_PREFIX or SWITCH_PREFIX); the other fabric's pins are refused.
+fabric_pinned() {
+  local mine=RING_PREFIX other=SWITCH_PREFIX
+  [[ $FABRIC == switched ]] && { mine=SWITCH_PREFIX other=RING_PREFIX; }
+  [[ -z ${!other:-} ]] || die "$other is set but FABRIC=$FABRIC: comment out the other fabric's pins"
+  [[ -n ${!mine:-} ]]
+}
+# fabric_config: RoCE mapping and bootstrap interface for every rank, from the pins in .env when they are set (no
+# ssh), else from detect_fabric. Copies over the fabric (fetch, build) always scan.
+fabric_config() {
+  local r k
+  fabric_pinned || { detect_fabric; return; }
+  if [[ $FABRIC == switched ]]; then
+    PREFIX=$SWITCH_PREFIX
+    for r in 0 1 2 3; do
+      for k in SWITCH_HCAS_$r SWITCH_GID_$r SWITCH_MGMT_$r; do
+        [[ -n ${!k:-} ]] || die "SWITCH_PREFIX is set, so $k must be set too"
+      done
+      k=SWITCH_HCAS_$r; RAIL_HCAS[$r]=${!k}
+      k=SWITCH_GID_$r; GID[$r]=${!k}
+      k=SWITCH_MGMT_$r; MGMT[$r]=${!k}
+    done
+    return 0
+  fi
+  PREFIX=$RING_PREFIX
+  for r in 0 1 2 3; do
+    for k in RING_HCA_PREV_$r RING_HCA_NEXT_$r RING_GID_$r RING_MGMT_$r; do
+      [[ -n ${!k:-} ]] || die "RING_PREFIX is set, so $k must be set too"
+    done
+    k=RING_HCA_PREV_$r; HCA_PREV[$r]=${!k}
+    k=RING_HCA_NEXT_$r; HCA_NEXT[$r]=${!k}
+    k=RING_GID_$r; GID[$r]=${!k}
+    k=RING_MGMT_$r; MGMT[$r]=${!k}
+  done
+}
+# fabric_verify: after fabric_config loaded the pins, scan the live fabric and print every pin that differs.
+# Returns 0 if all match (the arrays then hold the live values), 1 on a difference, 2 if the scan failed.
+fabric_verify() {
+  local -a prev=("${HCA_PREV[@]}") next=("${HCA_NEXT[@]}") rails=("${RAIL_HCAS[@]}") gid=("${GID[@]}") mgmt=("${MGMT[@]}")
+  local prefix=$PREFIX r bad=0 pin=RING
+  [[ $FABRIC == switched ]] && pin=SWITCH
+  detect_fabric || return 2
+  [[ $PREFIX == "$prefix" ]] || { echo "${pin}_PREFIX=$prefix, live $PREFIX"; bad=1; }
+  for r in 0 1 2 3; do
+    if [[ $FABRIC == switched ]]; then
+      [[ ${RAIL_HCAS[$r]} == "${rails[$r]}" ]] || { echo "SWITCH_HCAS_$r=${rails[$r]}, live ${RAIL_HCAS[$r]}"; bad=1; }
+    else
+      [[ ${HCA_PREV[$r]} == "${prev[$r]}" ]] || { echo "RING_HCA_PREV_$r=${prev[$r]}, live ${HCA_PREV[$r]}"; bad=1; }
+      [[ ${HCA_NEXT[$r]} == "${next[$r]}" ]] || { echo "RING_HCA_NEXT_$r=${next[$r]}, live ${HCA_NEXT[$r]}"; bad=1; }
+    fi
+    [[ ${GID[$r]} == "${gid[$r]}" ]] || { echo "${pin}_GID_$r=${gid[$r]}, live ${GID[$r]}"; bad=1; }
+    [[ ${MGMT[$r]} == "${mgmt[$r]}" ]] || { echo "${pin}_MGMT_$r=${mgmt[$r]}, live ${MGMT[$r]}"; bad=1; }
+  done
+  return $bad
+}
+# fabric_env RANK: the rank's NCCL and sparknet fabric settings (sparknet topology.render node_environment, as
+# spark-ds41f scripts/topology.py applies it). Ring: NCCL gets the node's ring HCAs as an exact-match set, sparknet
+# each neighbour rank's HCAs in lane order. Switched (transport oneshot-switched): NCCL gets every rail, sparknet
+# stripes over the first two (its maximum) to every peer, and both mark RoCE with ROCE_TC.
+fabric_env() {
   local r=$1 p n hcas peers
-  p=$(( (r + 3) % 4 )) n=$(( (r + 1) % 4 ))
   [[ ${GID[$r]} =~ ^[0-9]+$ ]] || die "rank $r: RoCE GID index '${GID[$r]}' is not a number"
-  hcas=$(tr ',' '\n' <<<"${HCA_PREV[$r]},${HCA_NEXT[$r]}" | grep . | LC_ALL=C sort -u | paste -sd, -)
-  peers=$(printf '{"%s":[%s],"%s":[%s]}' "$p" "$(sed 's/[^,][^,]*/"&"/g' <<<"${HCA_PREV[$r]}")" \
-    "$n" "$(sed 's/[^,][^,]*/"&"/g' <<<"${HCA_NEXT[$r]}")")
-  printf '%s\n' -e "NCCL_IB_HCA==$hcas" -e "NCCL_IB_GID_INDEX=${GID[$r]}" -e "NCCL_IB_SUBNET_PREFIX_LEN=$PREFIX" \
-    -e "SPARKNET_ROCE_PEER_HCAS=$peers" -e "SPARKNET_ROCE_GID_INDEX=${GID[$r]}" \
+  if [[ $FABRIC == switched ]]; then
+    hcas=${RAIL_HCAS[$r]}
+    [[ -n $hcas ]] || die "rank $r: no rail HCAs"
+    printf '%s\n' -e "NCCL_IB_HCA==$hcas" -e "SPARKNET_ROCE_HCA=$(cut -d, -f1-2 <<<"$hcas")"
+    [[ -z $ROCE_TC ]] || printf '%s\n' -e "NCCL_IB_TC=$ROCE_TC" -e "SPARKNET_ROCE_TRAFFIC_CLASS=$ROCE_TC"
+  else
+    p=$(( (r + 3) % 4 )) n=$(( (r + 1) % 4 ))
+    hcas=$(tr ',' '\n' <<<"${HCA_PREV[$r]},${HCA_NEXT[$r]}" | grep . | LC_ALL=C sort -u | paste -sd, -)
+    peers=$(printf '{"%s":[%s],"%s":[%s]}' "$p" "$(sed 's/[^,][^,]*/"&"/g' <<<"${HCA_PREV[$r]}")" \
+      "$n" "$(sed 's/[^,][^,]*/"&"/g' <<<"${HCA_NEXT[$r]}")")
+    printf '%s\n' -e "NCCL_IB_HCA==$hcas" -e "SPARKNET_ROCE_PEER_HCAS=$peers"
+  fi
+  printf '%s\n' -e "NCCL_IB_GID_INDEX=${GID[$r]}" -e "NCCL_IB_SUBNET_PREFIX_LEN=$PREFIX" \
+    -e "SPARKNET_ROCE_GID_INDEX=${GID[$r]}" \
     -e "NCCL_SOCKET_IFNAME=${MGMT[$r]}" -e "GLOO_SOCKET_IFNAME=${MGMT[$r]}" -e "TP_SOCKET_IFNAME=${MGMT[$r]}" \
     -e "VLLM_HOST_IP=${NODE[$r]}"
 }
@@ -342,9 +421,11 @@ serve_args() {   # serve_args RANK: the container argv after the image name
   return 0
 }
 
-# profile_env: the rank-independent engine environment, spark-ds41f config/cluster.json at shape tp4-ring (the
-# shared "environment" plus the shape's NCCL ring profile). NCCL is the image's patched 2.30.7 (bidirectional
-# switchless rings); nothing on the host is mounted over it.
+# profile_env: the rank-independent engine environment, spark-ds41f config/cluster.json (the shared "environment")
+# plus the fabric's sparknet transport profile: FABRIC=ring is shape tp4-ring (profile tp4-ring, transport
+# oneshot-ring4); FABRIC=switched is sparknet's profile "switched" (transport oneshot-switched, NCCL's own topology
+# and algorithm selection, the rendered environment of sparknet.nccl.profiles.environment("switched")). NCCL is
+# the image's patched 2.30.7; nothing on the host is mounted over it.
 profile_env() {
   local e
   kernel_backend >/dev/null || exit 1
@@ -363,18 +444,12 @@ profile_env() {
     MAX_JOBS=2 OMP_NUM_THREADS=8
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.6 SAFETENSORS_FAST_GPU=1
     TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-    # NCCL: sparknet's tp4-ring profile (neighbour ring only: no tree/PAT/NVLS, runtime connect)
-    NCCL_ALGO=Ring NCCL_BUFFSIZE=4194304 NCCL_COLLNET_ENABLE=0 NCCL_CROSS_NIC=1 NCCL_CUMEM_ENABLE=1
-    NCCL_CUMEM_HOST_ENABLE=0 NCCL_DEBUG=WARN NCCL_DEBUG_SUBSYS=INIT NCCL_GIN_ENABLE=0 NCCL_IB_ADDR_FAMILY=AF_INET
-    NCCL_IB_DISABLE=0 NCCL_IB_MERGE_NICS=1 NCCL_IB_ROCE_VERSION_NUM=2 NCCL_IB_SUBNET_AWARE_ROUTING=1
-    NCCL_IGNORE_CPU_AFFINITY=1 NCCL_LL128_BUFFSIZE=262144 NCCL_MAX_NCHANNELS=4 NCCL_MIN_NCHANNELS=4
-    NCCL_MIN_TRAFFIC_PER_CHANNEL=512 NCCL_MNNVL_ENABLE=0 NCCL_NET=IB NCCL_NET_PLUGIN=none NCCL_NVLS_ENABLE=0
-    NCCL_P2P_DISABLE=1 NCCL_PAT_ENABLE=0 'NCCL_PROTO=^LL128' NCCL_RMA_DISABLE=1 NCCL_RUNTIME_CONNECT=1
-    NCCL_SHM_DISABLE=1 NCCL_SWITCHLESS_BIDIRECTIONAL=2 'NCCL_THREAD_THRESHOLDS=-2 -2 -2 1 1 1'
-    # sparknet one-shot collectives over the relay ring (small all-reduce / all-gather)
-    SPARKNET_ROCE_ALLGATHER_MAX_BYTES=2097152 SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES=2097152
-    SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES=2097152 SPARKNET_ROCE_PROXY_CPU=big SPARKNET_ROCE_TIMEOUT_MS=10000
-    SPARKNET_ROCE_TOPOLOGY=ring4
+    # NCCL and sparknet settings every fabric shares (sparknet COMMON_IB_ENV)
+    NCCL_CROSS_NIC=1 NCCL_DEBUG=WARN NCCL_DEBUG_SUBSYS=INIT NCCL_IB_ADDR_FAMILY=AF_INET NCCL_IB_DISABLE=0
+    NCCL_IB_MERGE_NICS=1 NCCL_IB_ROCE_VERSION_NUM=2 NCCL_IB_SUBNET_AWARE_ROUTING=1 NCCL_IGNORE_CPU_AFFINITY=1
+    NCCL_LL128_BUFFSIZE=262144 NCCL_NET=IB NCCL_NET_PLUGIN=none NCCL_NVLS_ENABLE=0 NCCL_P2P_DISABLE=1
+    'NCCL_PROTO=^LL128' NCCL_SHM_DISABLE=1
+    SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES=2097152 SPARKNET_ROCE_PROXY_CPU=big SPARKNET_ROCE_TIMEOUT_MS=10000
     # DSpark drafter
     SPARK3_DSPARK_DEAD_ROWS_TAU=0.2 SPARK3_DSPARK_MAIN_PROJ_TP=1 SPARK3_DSPARK_PROFILE_TOKENS=random
     SPARK3_DSPARK_VOCAB_PARALLEL=1
@@ -392,6 +467,21 @@ profile_env() {
     VLLM_USE_AOT_COMPILE=1 VLLM_USE_BREAKABLE_CUDAGRAPH=0 VLLM_USE_FLASHINFER_SAMPLER=1 VLLM_USE_MEGA_AOT_ARTIFACT=1
     VLLM_USE_STANDALONE_COMPILE=1 VLLM_USE_V2_MODEL_RUNNER=1
   )
+  if [[ $FABRIC == switched ]]; then
+    # NCCL: sparknet's "switched" profile (every rank behind the switch: NCCL keeps its own topology and algorithm
+    # selection, up to 8 channels); sparknet one-shot collectives straight to every peer (SPARKNET_ROCE_TOPOLOGY=direct)
+    env+=(NCCL_BUFFSIZE=1048576 NCCL_CUMEM_ENABLE=0 NCCL_MAX_NCHANNELS=8
+      SPARKNET_ROCE_ALLGATHER_MAX_BYTES=4194304 SPARKNET_ROCE_TOPOLOGY=direct)
+  else
+    # NCCL: sparknet's tp4-ring profile (neighbour ring only: no tree/PAT/NVLS, runtime connect, bidirectional
+    # switchless rings); sparknet one-shot collectives over the relay ring
+    env+=(NCCL_ALGO=Ring NCCL_BUFFSIZE=4194304 NCCL_COLLNET_ENABLE=0 NCCL_CUMEM_ENABLE=1 NCCL_CUMEM_HOST_ENABLE=0
+      NCCL_GIN_ENABLE=0 NCCL_MAX_NCHANNELS=4 NCCL_MIN_NCHANNELS=4 NCCL_MIN_TRAFFIC_PER_CHANNEL=512 NCCL_MNNVL_ENABLE=0
+      NCCL_PAT_ENABLE=0 NCCL_RMA_DISABLE=1 NCCL_RUNTIME_CONNECT=1 NCCL_SWITCHLESS_BIDIRECTIONAL=2
+      'NCCL_THREAD_THRESHOLDS=-2 -2 -2 1 1 1'
+      SPARKNET_ROCE_ALLGATHER_MAX_BYTES=2097152 SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES=2097152
+      SPARKNET_ROCE_TOPOLOGY=ring4)
+  fi
   # Side-stream L2 prefetch of TileLang decode projections; the B12X profiles never set it. The packed BF16 vocabulary
   # head runs only through TileLang's logits projection: under B12X the head's apply() refuses it at the first step.
   [[ $KERNEL_BACKEND == tilelang ]] && env+=(VLLM_L2_PREFETCH_KERNELS=tilelang VLLM_DS41_PACKED_BF16_LM_HEAD=1)
@@ -410,7 +500,7 @@ docker_args() {  # docker_args RANK: docker run argv up to and including the ima
   [[ -n $DRI_CARD ]] && printf '%s\n' "--mount=type=bind,source=$DRI_CARD,target=/dev/dri/card0" '--device-cgroup-rule=c 226:* rw'
   [[ -n $CPUSET ]] && printf '%s\n' "--cpuset-cpus=$CPUSET"
   profile_env
-  ring_env "$r"
+  fabric_env "$r"
   # The key is named, never valued, here: docker copies it from the remote shell's environment (cmd_start sends
   # it over ssh stdin), so it stays out of every process argv and print-serve. vLLM reads VLLM_API_KEY.
   if (( r == 0 )) && [[ -n $API_KEY ]]; then printf '%s\n' -e VLLM_API_KEY; fi
@@ -434,25 +524,65 @@ cpu_list() {   # cpu_list "5-9,15-19": one CPU number per comma, ascending
   for part in "${parts[@]}"; do lo=${part%-*} hi=${part#*-}; out+=($(seq "$lo" "$hi")); done
   printf '%s\n' "${out[@]}" | sort -n | paste -sd, -
 }
+# doctor_reach RANK: ring, the next rank across its cable; switched, every other rank on every rail.
+doctor_reach() {
+  local r=$1 p net targets="" failed
+  if [[ $FABRIC == switched ]]; then
+    for p in 0 1 2 3; do (( p == r )) && continue
+      for net in $RAILS; do targets+=" $(awk -v net="$net" '$1 == net {print $4; exit}' <<<"${SCAN[$p]}")"; done
+    done
+  else targets=${PEER_IP[$r]}; fi
+  failed=$(remote "$r" 'for ip in $T; do ping -c 2 -i 0.2 -W 1 "$ip" >/dev/null 2>&1 || echo "$ip"; done' T="$targets" | paste -sd' ' -) || true
+  [[ -z $failed ]] || { echo "  FAIL rank $r cannot ping $failed"; return 1; }
+}
+# doctor_pfc RANK (FABRIC=switched, ROCE_TC set): each rail netdev must trust DSCP and run PFC on the priority that
+# DSCP ROCE_TC>>2 maps to, or RoCE is not lossless (the switch's PFC/ECN class matches on that DSCP). Read-only:
+# mlnx_qos only reads without arguments. A WARN, not a failure: a lossy fabric still serves.
+doctor_pfc() {
+  local r=$1 devs line
+  devs=$(for net in $RAILS; do awk -v net="$net" '$1 == net {print $3; exit}' <<<"${SCAN[$r]}"; done | paste -sd' ' -)
+  while read -r line; do
+    case $line in
+      *' pfc=1') ;;
+      *) echo "  WARN rank $r: $line: RoCE marked ROCE_TC=$ROCE_TC is not lossless here (trust dscp and PFC on its priority; README Switched fabric)" ;;
+    esac
+  done < <(remote "$r" '
+    dscp=$(printf "%02d" $((TC >> 2)))
+    for dev in $DEVS; do
+      out=$(mlnx_qos -i "$dev" 2>/dev/null) || { echo "$dev mlnx_qos unavailable pfc=?"; continue; }
+      trust=$(printf "%s\n" "$out" | awk "/trust state/ {print \$NF; exit}")
+      prio=$(printf "%s\n" "$out" | awk -v d="$dscp" "/prio:[0-7] dscp:/ && index(\$0, d \",\") {sub(/.*prio:/, \"\"); print substr(\$0, 1, 1); exit}")
+      if [ "$trust" != dscp ] || [ -z "$prio" ]; then echo "$dev trust=$trust pfc=?"; continue; fi
+      pfc=$(printf "%s\n" "$out" | awk -v p="$prio" "\$1 == \"enabled\" {print \$(p + 2); exit}")
+      echo "$dev trust=$trust dscp=$dscp prio=$prio pfc=$pfc"
+    done' TC="$ROCE_TC" DEVS="$devs" || true)
+}
 cmd_doctor() {
   local bad=0 out r scan=0
-  log "ring"
-  if [[ -n ${RING_PREFIX:-} ]]; then
-    ring_config
-    ring_verify || scan=$?
-    (( scan != 1 )) || { echo "  FAIL RING_* pins in .env differ from the live ring (above): update them"; bad=1; }
+  log "fabric ($FABRIC)"
+  if fabric_pinned; then
+    fabric_config
+    fabric_verify || scan=$?
+    (( scan != 1 )) || { echo "  FAIL fabric pins in .env differ from the live fabric (above): update them"; bad=1; }
   else
-    detect_ring || scan=2
+    detect_fabric || scan=2
   fi
   if (( scan != 2 )); then
     for r in 0 1 2 3; do
-      echo "  rank $r ${NODE[$r]}: NCCL $(ring_env "$r" | grep -o 'NCCL_IB_HCA=.*'), GID index ${GID[$r]}, bootstrap ${MGMT[$r]}"
-      echo "    to rank $(( (r + 3) % 4 )) via ${HCA_PREV[$r]}; to rank $(( (r + 1) % 4 )) via ${HCA_NEXT[$r]} (${NETS[$r]}), next rank at ${PEER_IP[$r]}"
+      echo "  rank $r ${NODE[$r]}: NCCL $(fabric_env "$r" | grep -o 'NCCL_IB_HCA=.*'), GID index ${GID[$r]}, bootstrap ${MGMT[$r]}"
+      if [[ $FABRIC == switched ]]; then
+        echo "    rails ${RAILS// /, } via ${RAIL_HCAS[$r]}"
+      else
+        echo "    to rank $(( (r + 3) % 4 )) via ${HCA_PREV[$r]}; to rank $(( (r + 1) % 4 )) via ${HCA_NEXT[$r]} (${NETS[$r]}), next rank at ${PEER_IP[$r]}"
+      fi
       awk '$1 !~ /^@/ {printf "    %-16s %-14s %-15s %-16s gid %-4s mtu %-5s roce_mtu %s\n", $3, $2, $4, $1, $5, $6, $7}' <<<"${SCAN[$r]}"
-      awk -v r="$r" '$1 !~ /^@/ && $6 != 9000 {print "  WARN rank " r ": " $3 " MTU " $6 " (the ring runs 9000-byte frames)"}' <<<"${SCAN[$r]}"
-      remote "$r" 'ping -c 2 -W 1 "$PEER" >/dev/null' PEER="${PEER_IP[$r]}" || { echo "  FAIL rank $r cannot ping ${PEER_IP[$r]}"; bad=1; }
+      awk -v r="$r" '$1 !~ /^@/ && $6 != 9000 {print "  WARN rank " r ": " $3 " MTU " $6 " (the fabric runs 9000-byte frames)"}' <<<"${SCAN[$r]}"
+      doctor_reach "$r" || bad=1
+      if [[ $FABRIC == switched && -n $ROCE_TC ]]; then doctor_pfc "$r"; fi
     done
-    [[ -n ${RING_PREFIX:-} ]] || echo "  pin these with RING_* in .env so print-serve needs no ssh (.env.example)"
+    if ! fabric_pinned; then
+      echo "  pin these with $([[ $FABRIC == switched ]] && echo 'SWITCH_*' || echo 'RING_*') in .env so print-serve needs no ssh (.env.example)"
+    fi
   else bad=1; fi
   log "nodes"
   out=$(every '
@@ -529,10 +659,10 @@ cmd_doctor() {
 }
 
 # fetch: each rank downloads a size-balanced quarter of the pinned files over its own uplink (a Spark's management
-# port is 1 GbE), rank 0 gathers the quarters over the cables, then fans the full tree back out. Resumable.
+# port is 1 GbE), rank 0 gathers the quarters over the fabric, then fans the full tree back out. Resumable.
 cmd_fetch() {
   [[ -f $ROOT/$CHECKSUMS ]] || die "missing $CHECKSUMS"
-  detect_ring || die "ring detection failed (./dsv41.sh doctor)"
+  detect_fabric || die "fabric detection failed (./dsv41.sh doctor)"
   # Files some rank already holds at full size are not downloaded again; gather and fan-out move them.
   local have; have=$(every 'cd "$MODEL_DIR" 2>/dev/null && find . -maxdepth 2 -type f -not -path "./.cache/*" -printf "%s %P\n" || true' \
     MODEL_DIR="$MODEL_DIR")
@@ -573,12 +703,19 @@ PY
       FILES="$files" RANK="$r" & pids+=($!)
   done
   wait_all "a rank's download failed"
-  log "gather on rank 0: 1 -> 0 and 3 -> 0 in parallel, 2 -> 1 -> 0"
-  ring_copy 1 0 & pids+=($!); ring_copy 3 0 & pids+=($!); ring_copy 2 1 & pids+=($!); wait_all "gather failed"
-  ring_copy 1 0
-  log "fan out: 0 -> 1 and 0 -> 3 in parallel, then 1 -> 2"
-  ring_copy 0 1 & pids+=($!); ring_copy 0 3 & pids+=($!); wait_all "fan-out failed"
-  ring_copy 1 2
+  if [[ $FABRIC == switched ]]; then
+    log "gather on rank 0: 1, 2 and 3 -> 0 in parallel"
+    fabric_copy 1 0 & pids+=($!); fabric_copy 2 0 & pids+=($!); fabric_copy 3 0 & pids+=($!); wait_all "gather failed"
+    log "fan out: 0 -> 1, 2 and 3 in parallel"
+    fabric_copy 0 1 & pids+=($!); fabric_copy 0 2 & pids+=($!); fabric_copy 0 3 & pids+=($!); wait_all "fan-out failed"
+  else
+    log "gather on rank 0: 1 -> 0 and 3 -> 0 in parallel, 2 -> 1 -> 0"
+    fabric_copy 1 0 & pids+=($!); fabric_copy 3 0 & pids+=($!); fabric_copy 2 1 & pids+=($!); wait_all "gather failed"
+    fabric_copy 1 0
+    log "fan out: 0 -> 1 and 0 -> 3 in parallel, then 1 -> 2"
+    fabric_copy 0 1 & pids+=($!); fabric_copy 0 3 & pids+=($!); wait_all "fan-out failed"
+    fabric_copy 1 2
+  fi
   cmd_verify || die "checksum verification failed"
   log "fetch: checkpoint verified on all four ranks"
 }
@@ -586,16 +723,19 @@ PY
 # not `jobs -p`: a job that already exited is gone from the job table, and its failure would go unseen.
 pids=()
 wait_all() { local p rc=0; for p in "${pids[@]}"; do wait "$p" || rc=1; done; pids=(); (( rc == 0 )) || die "$1"; }
-cable_addr() {  # cable_addr FROM TO: TO's address on the cable it shares with FROM (adjacent ranks only)
+# peer_addr FROM TO: TO's fabric address as FROM reaches it: switched, TO's address on the first rail; ring, on the
+# cable the two share (adjacent ranks only).
+peer_addr() {
   local from=$1 to=$2 net
-  if (( to == (from + 1) % 4 )); then net=${LINK[$from]}
+  if [[ $FABRIC == switched ]]; then net=${RAILS%% *}
+  elif (( to == (from + 1) % 4 )); then net=${LINK[$from]}
   elif (( from == (to + 1) % 4 )); then net=${LINK[$to]}
   else die "rank $from and rank $to share no cable"; fi
   awk -v net="$net" '$1 == net {print $4; exit}' <<<"${SCAN[$to]}"
 }
-ring_copy() {   # ring_copy FROM TO: rsync FROM's checkpoint tree to TO across their cable (skips files TO already has)
-  local from=$1 to=$2 ip; ip=$(cable_addr "$from" "$to")
-  [[ -n $ip ]] || die "no cable address from rank $from to rank $to"
+fabric_copy() {   # fabric_copy FROM TO: rsync FROM's checkpoint tree to TO over the fabric (skips files TO already has)
+  local from=$1 to=$2 ip; ip=$(peer_addr "$from" "$to")
+  [[ -n $ip ]] || die "no fabric address from rank $from to rank $to"
   log "rank $from -> rank $to over $ip"
   remote "$from" '
     ssh -n -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$USER@$IP" mkdir -p "$MODEL_DIR"
@@ -626,13 +766,14 @@ cmd_build() {
       docker run --rm --gpus all --memory=16g --memory-swap=16g --ulimit=core=0 --entrypoint /usr/bin/python3 \
         "$IMAGE" /opt/spark-ds41f/smoke.py 2>&1 | tail -5
     fi' IMAGE="$IMAGE" || die "image smoke failed on rank 0"
-  detect_ring || die "ring detection failed (./dsv41.sh doctor)"
+  detect_fabric || die "fabric detection failed (./dsv41.sh doctor)"
+  # Two images leave rank 0 at a time (docker save is CPU-bound); on a switch the third copy comes from rank 1 too.
   ship_image 0 1 & pids+=($!); ship_image 0 3 & pids+=($!); wait_all "image ship from rank 0 failed"
   ship_image 1 2
   every 'docker image inspect "$IMAGE" --format "{{.Id}}"' IMAGE="$IMAGE"
 }
-ship_image() {   # ship_image FROM TO: stream the image across the cable between adjacent ranks
-  local from=$1 to=$2 ip; ip=$(cable_addr "$from" "$to")
+ship_image() {   # ship_image FROM TO: stream the image over the fabric (ring: adjacent ranks only)
+  local from=$1 to=$2 ip; ip=$(peer_addr "$from" "$to")
   log "image rank $from -> rank $to over $ip"
   remote "$from" 'docker save "$IMAGE" | ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$USER@$IP" docker load' \
     IMAGE="$IMAGE" USER="$SSH_USER" IP="$ip"
@@ -715,15 +856,15 @@ install_guards() {
 steady_guards() { local g; g=$(guard_cmd steady) || exit 1; every "$g"; }
 
 cmd_start() {
-  ring_config || die "ring detection failed (./dsv41.sh doctor)"
+  fabric_config || die "fabric detection failed (./dsv41.sh doctor)"
   local r running allowed out guard
   local -A cmd=()
   # Every rank's command first: a configuration error must not leave some ranks started.
   guard=$(guard_cmd startup) || exit 1
   for r in 0 1 2 3; do cmd[$r]=$( { docker_args "$r"; serve_args "$r"; } | quoted ) || exit 1; done
-  # Pinned RING_* values are what print-serve shows; start re-scans the ring and refuses if a pin is stale (a
-  # link flap moves GID indices).
-  [[ -z ${RING_PREFIX:-} ]] || ring_verify || die "RING_* pins in .env differ from the live ring (./dsv41.sh doctor)"
+  # Pinned RING_*/SWITCH_* values are what print-serve shows; start re-scans the fabric and refuses if a pin is
+  # stale (a link flap moves GID indices).
+  if fabric_pinned; then fabric_verify || die "fabric pins in .env differ from the live fabric (./dsv41.sh doctor)"; fi
   allowed=$(tr ' ' '\n' <<<"$CONTAINER ${ALLOWED_CONTAINERS:-}" | grep . | paste -sd'|' -)
   running=$(every 'docker ps --format "{{.Names}}" | grep -vxE "$A" || true' A="$allowed")
   [[ -z $(sed 's/^\[r[0-9]\] //' <<<"$running" | grep .) ]] || die "other containers are running (./dsv41.sh stop-other, or ALLOWED_CONTAINERS):"$'\n'"$running"
@@ -808,7 +949,7 @@ cmd_restore_other() {
 
 cmd_print_serve() {
   local r=${1:?rank} cmd guard
-  ring_config || die "ring detection failed"
+  fabric_config || die "fabric detection failed"
   # Captured first: a die inside docker_args/serve_args must not leave a partial command on stdout.
   guard=$(guard_cmd startup) || exit 1
   cmd=$( { docker_args "$r"; serve_args "$r"; } | quoted ) || exit 1

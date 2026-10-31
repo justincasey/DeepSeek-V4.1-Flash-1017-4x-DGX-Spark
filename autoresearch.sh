@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Autoresearch benchmark: deploy the current tree on the four-Spark ring and measure decode, prefill, boot and quality.
+# Autoresearch benchmark: deploy the current tree on the four Sparks (the FABRIC in .env.example) and measure decode,
+# prefill, boot and quality.
 #
 #   1. .env := .env.example (experiments change tracked files only).
 #   2. If docker/ differs from the image last built by this harness: stop, ./dsv41.sh build (~20 min).

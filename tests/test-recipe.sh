@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Static contract test: no GPU, no ssh, no network. Generates every rank's memory-guard arm + docker run + vllm
-# serve command with pinned ring values and checks the invariants a deployment depends on (spark-ds41f r6w at
-# tp4-ring, config/cluster.json @ 2dc95329).
+# serve command with pinned fabric values (ring, then switched) and checks the invariants a deployment depends on
+# (spark-ds41f r6w at tp4-ring, config/cluster.json @ 2dc95329; sparknet's "switched" profile).
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
@@ -33,6 +33,7 @@ export NODES="10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4" MODELS_DIR=/m MODEL_NAME=M IM
   DISPLAY_CARVEOUT=0 DRI_CARD=/dev/dri/by-path/pci-000f:01:00.0-card CPUSET=5-9,15-19 CONTAINER_MEMORY=112g \
   STARTUP_MEMGUARD_GIB=5 STARTUP_MEMGUARD_INTERVAL=0.25 STARTUP_MEMGUARD_WAIT=120 MEMGUARD_GIB=3 MEMGUARD_INTERVAL=2 \
   EXTRA_VLLM_ARGS= EXTRA_DOCKER_ARGS= \
+  FABRIC=ring ROCE_TC=106 SWITCH_PREFIX= \
   RING_PREFIX=24 \
   RING_HCA_PREV_0=hA RING_HCA_NEXT_0=hB RING_GID_0=5 RING_MGMT_0=m0 \
   RING_HCA_PREV_1=hB RING_HCA_NEXT_1=hA RING_GID_1=3 RING_MGMT_1=m1 \
@@ -110,6 +111,50 @@ for r in 0 1 2 3; do
     || bad "rank $r: startup memory guard line: $g"
 done
 ok "per-rank invariants checked (4 ranks)"
+
+# Switched fabric: sparknet's "switched" profile (transport oneshot-switched). Rails in subnet order; rank 3 has a
+# third rail (NCCL takes it, sparknet stripes over two at most); GID indices differ per node.
+declare -A sw_hcas=([0]=rA,rB [1]=rA,rB [2]=rA,rB [3]=rA,rB,rC) sw_gid=([0]=3 [1]=3 [2]=5 [3]=3)
+sw() {
+  FABRIC=switched RING_PREFIX= SWITCH_PREFIX=24 \
+    SWITCH_HCAS_0=${sw_hcas[0]} SWITCH_GID_0=${sw_gid[0]} SWITCH_MGMT_0=m0 \
+    SWITCH_HCAS_1=${sw_hcas[1]} SWITCH_GID_1=${sw_gid[1]} SWITCH_MGMT_1=m1 \
+    SWITCH_HCAS_2=${sw_hcas[2]} SWITCH_GID_2=${sw_gid[2]} SWITCH_MGMT_2=m2 \
+    SWITCH_HCAS_3=${sw_hcas[3]} SWITCH_GID_3=${sw_gid[3]} SWITCH_MGMT_3=m3 "$@"
+}
+swfail=0
+for r in 0 1 2 3; do
+  c=$(sw ./dsv41.sh print-serve "$r" | sed -n 2p) || { bad "switched rank $r: print-serve failed"; swfail=1; continue; }
+  for want in "SPARKNET_ROCE_TOPOLOGY=direct" "NCCL_MAX_NCHANNELS=8" "NCCL_BUFFSIZE=1048576" "NCCL_CUMEM_ENABLE=0" \
+              "SPARKNET_ROCE_ALLGATHER_MAX_BYTES=4194304" "SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES=2097152" \
+              "NCCL_IB_TC=106" "SPARKNET_ROCE_TRAFFIC_CLASS=106" "NCCL_IB_SUBNET_PREFIX_LEN=24" "NCCL_PROTO=\^LL128" \
+              "NCCL_IB_SUBNET_AWARE_ROUTING=1" "NCCL_SOCKET_IFNAME=m$r" "VLLM_HOST_IP=10.0.0.$((r + 1))"; do
+    has "$c" "$want" || { bad "switched rank $r: missing $want"; swfail=1; }
+  done
+  # nothing of the neighbour ring: no forced ring algorithm, no switchless-ring controls, no neighbour route map
+  for gone in NCCL_ALGO NCCL_SWITCHLESS_BIDIRECTIONAL NCCL_RUNTIME_CONNECT NCCL_MIN_NCHANNELS NCCL_THREAD_THRESHOLDS \
+              NCCL_MIN_TRAFFIC_PER_CHANNEL SPARKNET_ROCE_PEER_HCAS SPARKNET_ROCE_ALLREDUCE_DISPATCH_MAX_BYTES ring4; do
+    has "$c" "$gone" && { bad "switched rank $r: ring setting $gone"; swfail=1; }
+  done
+  want_sn=$(cut -d, -f1-2 <<<"${sw_hcas[$r]}")
+  [[ $(envval "$c" NCCL_IB_HCA) == "=${sw_hcas[$r]}" && $(envval "$c" SPARKNET_ROCE_HCA) == "$want_sn" ]] \
+    || { bad "switched rank $r: NCCL_IB_HCA=$(envval "$c" NCCL_IB_HCA) SPARKNET_ROCE_HCA=$(envval "$c" SPARKNET_ROCE_HCA)"; swfail=1; }
+  [[ $(envval "$c" NCCL_IB_GID_INDEX) == "${sw_gid[$r]}" && $(envval "$c" SPARKNET_ROCE_GID_INDEX) == "${sw_gid[$r]}" ]] \
+    || { bad "switched rank $r: GID index must be ${sw_gid[$r]}"; swfail=1; }
+done
+(( swfail )) || ok "switched: sparknet switched profile, every rail to NCCL, two stripes to sparknet, ROCE_TC on both (4 ranks)"
+c=$(sw env ROCE_TC= ./dsv41.sh print-serve 1 | sed -n 2p)
+! has "$c" NCCL_IB_TC && ! has "$c" SPARKNET_ROCE_TRAFFIC_CLASS && ok "switched: ROCE_TC= leaves RoCE unmarked" || bad "ROCE_TC= still marks"
+c=$(sw env ROCE_TC=040 ./dsv41.sh print-serve 1 | sed -n 2p)
+has "$c" "NCCL_IB_TC=40" && has "$c" "SPARKNET_ROCE_TRAFFIC_CLASS=40" && ok "switched: ROCE_TC=040 passed as 40 (sparknet parses int(x, 0))" \
+  || bad "ROCE_TC=040: $(envval "$c" SPARKNET_ROCE_TRAFFIC_CLASS)"
+for bogus in "FABRIC=mesh" "ROCE_TC=256" "ROCE_TC=x" "SWITCH_GID_0=x" "SWITCH_MGMT_1=" "RING_PREFIX=24"; do
+  if c=$(sw env $bogus ./dsv41.sh print-serve 0 2>/dev/null); then bad "switched $bogus print-serve succeeded"
+  elif [[ -n $c ]]; then bad "switched $bogus printed a partial command"
+  else ok "switched $bogus refused"; fi
+done
+if c=$(SWITCH_PREFIX=24 ./dsv41.sh print-serve 0 2>/dev/null); then bad "FABRIC=ring with SWITCH_PREFIX set print-serve succeeded"
+else ok "FABRIC=ring refuses switch pins"; fi
 
 c=$(run 0) || bad "print-serve 0 failed"
 gen=$(envval "$(grep -o -- '--override-generation-config [^ ]*' <<<"$c" | tr ' ' '=' | sed 's/^--//')" override-generation-config)
@@ -201,9 +246,9 @@ for r in 0 1 2 3; do
   [[ $(wc -l <<<"$c" | tr -d ' ') == 2 ]] || bad ".env.example rank $r: expected guard + docker lines"
 done
 c=$(cd "$tmp" && env -i PATH="$PATH" HOME="$HOME" ./dsv41.sh print-serve 0 | sed -n 2p)
-has "$c" 'SPARKNET_ROCE_PEER_HCAS=\{\"3\":\[\"rocep1s0f0\"\,\"roceP2p1s0f0\"\]\,\"1\":\[\"rocep1s0f1\"\,\"roceP2p1s0f1\"\]\}' \
-  && has "$c" "NCCL_IB_HCA==roceP2p1s0f0\,roceP2p1s0f1\,rocep1s0f0\,rocep1s0f1" \
-  && ok ".env.example renders the measured ring without ssh" || bad ".env.example ring: $(envval "$c" SPARKNET_ROCE_PEER_HCAS)"
+has "$c" "NCCL_IB_HCA==rocep1s0f1\,roceP2p1s0f1" && has "$c" "SPARKNET_ROCE_HCA=rocep1s0f1\,roceP2p1s0f1" \
+  && has "$c" "SPARKNET_ROCE_TOPOLOGY=direct" && has "$c" "NCCL_IB_TC=106" && has "$c" "NCCL_SOCKET_IFNAME=enP7s7" \
+  && ok ".env.example renders the site's switch without ssh" || bad ".env.example switch: $c"
 
 # weight snapshots: every rank must get the same switch (the fail-closed restore all-reduces across ranks; a rank
 # that disagrees leaves the others waiting at boot), on by default and off with WEIGHT_SNAPSHOT=0

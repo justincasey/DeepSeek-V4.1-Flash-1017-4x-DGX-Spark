@@ -1,0 +1,46 @@
+{
+ "step": "prefill",
+ "ok": true,
+ "started": "2026-10-31T17:07:16-0500",
+ "finished": "2026-10-31T17:09:18-0500",
+ "base_url": "http://192.168.1.121:8000",
+ "model": "deepseek-v4.1-flash",
+ "args": {
+  "base_url": "http://192.168.1.121:8000",
+  "model": "deepseek-v4.1-flash",
+  "timeout": 7200.0,
+  "step": "prefill",
+  "out": "bench/runs/switched-20261031-170110/prefill",
+  "lengths": "32k,128k,512k"
+ },
+ "results": {
+  "settings": {
+   "lengths": "32k,128k,512k",
+   "max_model_len": 1048576,
+   "nonce": "46ebb3ff740a",
+   "max_tokens": 1,
+   "tokens_per_word": 1.59275,
+   "sized_with_tokenize": true
+  },
+  "rows": [
+   {
+    "target": 32768,
+    "prompt_tokens": 32751,
+    "seconds": 5.051296041812748,
+    "tok_s": 6483.682549765331
+   },
+   {
+    "target": 131072,
+    "prompt_tokens": 131052,
+    "seconds": 20.230430708965287,
+    "tok_s": 6477.963909187717
+   },
+   {
+    "target": 524288,
+    "prompt_tokens": 524262,
+    "seconds": 95.50483112502843,
+    "tok_s": 5489.376755335778
+   }
+  ]
+ }
+}
