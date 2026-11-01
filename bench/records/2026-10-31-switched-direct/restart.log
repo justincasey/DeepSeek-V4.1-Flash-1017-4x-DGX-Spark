@@ -1,0 +1,18 @@
+[r0] not running
+[r1] not running
+[r2] not running
+[r3] not running
+17:59:29 prepared: stopped, caches dropped, clocks, guards
+startup memguard active for dsv41-1017 (threshold 5 GiB, interval 0.25s, mode prelaunch)
+startup memguard active for dsv41-1017 (threshold 5 GiB, interval 0.25s, mode prelaunch)
+startup memguard active for dsv41-1017 (threshold 5 GiB, interval 0.25s, mode prelaunch)
+17:59:30 ranks 3 2 1 started under their startup memory guards
+startup memguard active for dsv41-1017 (threshold 5 GiB, interval 0.25s, mode prelaunch)
+17:59:31 rank 0 started on 192.168.1.121 under its startup memory guard
+17:59:31 waiting for http://192.168.1.121:8000 (up to 3600s; first boot prepares the TileLang kernels into /home/spark/.cache/dsv41-ds41f)
+18:01:30 up after 119s: http://192.168.1.121:8000/v1
+[r0] steady memguard active for dsv41-1017 (threshold 3 GiB, interval 2s, mode running)
+[r1] steady memguard active for dsv41-1017 (threshold 3 GiB, interval 2s, mode running)
+[r2] steady memguard active for dsv41-1017 (threshold 3 GiB, interval 2s, mode running)
+[r3] steady memguard active for dsv41-1017 (threshold 3 GiB, interval 2s, mode running)
+18:01:32 smoke: OK (17*23=391)

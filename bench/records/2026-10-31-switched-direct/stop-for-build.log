@@ -1,0 +1,5 @@
+17:53:01 KV snapshot saved in 2s: {"saved":true,"epoch":"d6be1771186d4fbeb375689acc8ee3b0","ranks":4,"bytes_per_rank":11274207232,"cached_blocks":43827,"hash_entries":44367,"seconds":2.017,"path":"/cache/dsv41/kv-snapshots/scheduler-a231f6c7cbb671f539eababb"}
+[r0] stopped
+[r1] stopped
+[r2] stopped
+[r3] stopped

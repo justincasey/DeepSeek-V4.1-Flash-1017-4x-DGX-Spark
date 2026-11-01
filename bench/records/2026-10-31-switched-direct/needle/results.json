@@ -1,0 +1,30 @@
+{
+ "step": "needle",
+ "ok": true,
+ "started": "2026-10-31T19:28:06-0500",
+ "finished": "2026-10-31T19:31:44-0500",
+ "base_url": "http://192.168.1.121:8000",
+ "model": "deepseek-v4.1-flash",
+ "args": {
+  "base_url": "http://192.168.1.121:8000",
+  "model": "deepseek-v4.1-flash",
+  "timeout": 7200.0,
+  "step": "needle",
+  "out": "bench/runs/needle-direct",
+  "tokens": 1000000
+ },
+ "results": {
+  "settings": {
+   "tokens": 1000000,
+   "target": 1000000,
+   "max_model_len": 1048576,
+   "nonce": "ea39740c6fe4",
+   "code": "31202",
+   "max_tokens": 16
+  },
+  "prompt_tokens": 999996,
+  "seconds": 215.87808962492272,
+  "answer": "31202",
+  "passed": true
+ }
+}

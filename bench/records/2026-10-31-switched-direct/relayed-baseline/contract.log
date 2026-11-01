@@ -1,0 +1,51 @@
+PASS shell syntax dsv41.sh
+PASS shell syntax tests/test-recipe.sh
+PASS python syntax
+PASS per-rank invariants checked (4 ranks)
+PASS switched: sparknet switched profile, every rail to NCCL, two stripes to sparknet, ROCE_TC on both (4 ranks)
+PASS switched: ROCE_TC= leaves RoCE unmarked
+PASS switched: ROCE_TC=040 passed as 40 (sparknet parses int(x, 0))
+PASS switched FABRIC=mesh refused
+PASS switched ROCE_TC=256 refused
+PASS switched ROCE_TC=x refused
+PASS switched SWITCH_GID_0=x refused
+PASS switched SWITCH_MGMT_1= refused
+PASS switched RING_PREFIX=24 refused
+PASS FABRIC=ring refuses switch pins
+PASS generation defaults temperature 1.0 top_p 1.0
+PASS GENERATION_DEFAULTS= keeps vLLM's sampling
+PASS DSpark speculative config (k=5, adaptive verification at row cost 0.02)
+PASS ADAPTIVE_VERIFICATION_ROW_COST= turns adaptive verification off
+PASS DSPARK=0 drops speculation
+PASS graph ladder to 96 rows, long-prefill threshold 8096
+PASS MAX_NUM_SEQS=8: ladder to 48
+PASS DSPARK=0: one row per sequence
+PASS EAGER=1 drops CUDA graphs
+PASS empty KV budget profiles, utilization gate kept
+PASS PREFIX_CACHING=0
+PASS TEXT_ONLY=1 drops the vision encoder
+PASS KERNEL_BACKEND=b12x switches every kernel flag
+PASS CPUSET, CONTAINER_MEMORY, DRI_CARD empty drop their flags
+PASS DISPLAY_CARVEOUT=1
+PASS API_KEY enforced via env on rank 0, never in argv
+PASS memory guard keys reach memguard-start.sh
+PASS KERNEL_BACKEND=bogus rejected
+PASS DRAFT_SAMPLE_METHOD=bogus rejected
+PASS ADAPTIVE_VERIFICATION_ROW_COST=1.5 rejected
+PASS NUM_SPECULATIVE_TOKENS=0 rejected
+PASS MAX_NUM_BATCHED_TOKENS=96 rejected
+PASS RING_GID_0=x rejected
+PASS RING_MGMT_2= rejected
+PASS MEMGUARD_GIB=5 rejected
+PASS STARTUP_MEMGUARD_INTERVAL=0 rejected
+PASS DISPLAY_CARVEOUT=1 DRI_CARD= rejected
+PASS CONTAINER=bad/name rejected
+PASS precedence: env > .env > defaults (ring pins from .env)
+PASS .env.example renders the site's switch without ssh
+PASS DSV41_WEIGHT_SNAPSHOT=1 on every rank
+PASS DSV41_WEIGHT_SNAPSHOT=0 on every rank
+PASS DSV41_KV_PERSIST=0 on every rank
+PASS DSV41_KV_PERSIST=1 on every rank
+PASS memory guard pinned to spark-ds41f@2dc95329
+PASS checkpoint manifest config/DeepSeek-V4.1-Flash-1017.sha256
+OK

@@ -1,0 +1,23 @@
+== check -> bench/runs/autoresearch-20261031-175246/check
+  check prose          MATCH (token_ids)
+  check code           MATCH (token_ids)
+  check math           MATCH (token_ids)
+  check json           MATCH (token_ids)
+  check reasoning_off  MATCH (token_ids)
+  check summary        MATCH (token_ids)
+
+## Token-id regression check
+
+Reference: /Users/justin/recipes/DeepSeek-V4.1-Flash-1017-4x-DGX-Spark/bench/reference.json (pinned 2026-10-17T22:16:47-0500, served /models)
+
+| prompt | compared | result | first divergence |
+|---|---|---|---:|
+| prose | token_ids | MATCH | - |
+| code | token_ids | MATCH | - |
+| math | token_ids | MATCH | - |
+| json | token_ids | MATCH | - |
+| reasoning_off | token_ids | MATCH | - |
+| summary | token_ids | MATCH | - |
+
+_check: ok (2026-10-31T18:07:25-0500)_
+
