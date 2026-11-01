@@ -1,0 +1,41 @@
+17:53:10 build dsv41-1017-ds41f:r6w-direct on rank 0
+
+#55 [dsv41 2/4] COPY --from=fetch /work/spark-ds41f/LICENSE /opt/spark-ds41f/LICENSE
+#55 DONE 0.1s
+
+#56 [dsv41 3/4] COPY --from=fetch /work/out/smoke.py /work/out/REVISION /opt/spark-ds41f/
+#56 DONE 0.1s
+
+#57 [dsv41 4/4] RUN SCALE_CODES_FUSED_MOE_TILELANG_SHA256=fdb6f54d02859e7d7e1aee5fb9f73c5f0a2a9ac26ded4044911b8f10e5b25ddb     SCALE_CODES_TILELANG_GEMM_SHA256=1b6b2c878fb79293d3cce291a27002d6d966718218d69a7461bf99a38a38556c     SCALE_CODES_TILELANG_MOE_SHA256=b446d2fe12bc6c6785f8593148c21fb7036369e749488437f90f335b1f78bf6d     LINEAR_BUDGET_ADAPTIVE_VERIFICATION_SHA256=cffcb7cd663d15f206688a17559e0424c24f145474ce0703635b2ae1d5f525c3     LINEAR_BUDGET_SPECULATIVE_SHA256=62f0a2409d5c1a64ec1d364033cc2df0268e1aadccf390ac60a5be91ea1b88bd     python3 - <<'PY'
+#57 0.173 TileLang SM12x block-scaled MMA present
+#57 0.173 DeepSeek V4.1 reasoning efforts {'minimal': 50, 'low': 50, 'medium': 75, 'high': 75, 'xhigh': 75, 'max': 100}
+#57 0.173 Weight snapshot hook present (DSV41_WEIGHT_SNAPSHOT=1 enables it)
+#57 0.173 Persistent prefix KV cache hooks present (DSV41_KV_PERSIST=1 enables them, POST /v1/dsv41/kv_snapshot saves)
+#57 0.173 MoE scale-codes overlay present
+#57 0.173 Block verification ports present (vllm#60945 lookahead bound, vllm#61161 step seeds)
+#57 0.173 CED non-final prefill chunks keep one decoder row (DSV41_CED_SKIP_NONFINAL=0 keeps 128)
+#57 0.173 DSpark runs without the pre-collapse MTP buffer
+#57 0.173 DSpark draft budget by a linear step cost (adaptive_verification_row_cost, default 0.02), nothing timed
+#57 DONE 0.2s
+
+#58 exporting to image
+#58 exporting layers
+#58 exporting layers 1.4s done
+#58 writing image sha256:b88d6047d9c95da4a8c261cd2bd2e17db2806a971491ea34a68ba19b9c77a0b2 done
+#58 naming to docker.io/library/dsv41-1017-ds41f:r6w-direct done
+#58 DONE 1.5s
+GPU import smoke passed
+TileLang 0.1.15
+TileLang import smoke passed
+sparknet proxy ABI 10
+sparknet import smoke passed
+17:54:23 image rank 0 -> rank 1 over 10.100.10.2
+17:54:23 image rank 0 -> rank 3 over 10.100.10.4
+Loaded image: dsv41-1017-ds41f:r6w-direct
+Loaded image: dsv41-1017-ds41f:r6w-direct
+17:56:39 image rank 1 -> rank 2 over 10.100.10.3
+Loaded image: dsv41-1017-ds41f:r6w-direct
+[r0] sha256:b88d6047d9c95da4a8c261cd2bd2e17db2806a971491ea34a68ba19b9c77a0b2
+[r1] sha256:b88d6047d9c95da4a8c261cd2bd2e17db2806a971491ea34a68ba19b9c77a0b2
+[r2] sha256:b88d6047d9c95da4a8c261cd2bd2e17db2806a971491ea34a68ba19b9c77a0b2
+[r3] sha256:b88d6047d9c95da4a8c261cd2bd2e17db2806a971491ea34a68ba19b9c77a0b2

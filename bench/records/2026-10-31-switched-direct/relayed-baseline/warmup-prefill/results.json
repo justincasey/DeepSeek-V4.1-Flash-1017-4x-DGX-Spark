@@ -1,0 +1,34 @@
+{
+ "step": "prefill",
+ "ok": true,
+ "started": "2026-10-31T17:47:25-0500",
+ "finished": "2026-10-31T17:47:30-0500",
+ "base_url": "http://192.168.1.121:8000",
+ "model": "deepseek-v4.1-flash",
+ "args": {
+  "base_url": "http://192.168.1.121:8000",
+  "model": "deepseek-v4.1-flash",
+  "timeout": 7200.0,
+  "step": "prefill",
+  "out": "bench/runs/autoresearch-20261031-174339/warmup-prefill",
+  "lengths": "32k"
+ },
+ "results": {
+  "settings": {
+   "lengths": "32k",
+   "max_model_len": 1048576,
+   "nonce": "5a3fcbcafaf4",
+   "max_tokens": 1,
+   "tokens_per_word": 1.59325,
+   "sized_with_tokenize": true
+  },
+  "rows": [
+   {
+    "target": 32768,
+    "prompt_tokens": 32750,
+    "seconds": 5.045811834046617,
+    "tok_s": 6490.53137079337
+   }
+  ]
+ }
+}

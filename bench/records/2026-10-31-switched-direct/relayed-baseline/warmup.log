@@ -1,0 +1,41 @@
+== decode -> bench/runs/autoresearch-20261031-174339/warmup-decode
+  decode prose      c=1   agg     66.3 tok/s  per-stream    67.4  ttft 0.131  reqs 3 err 0
+  decode code       c=1   agg     96.4 tok/s  per-stream    98.5  ttft 0.119  reqs 4 err 0
+  decode structured c=1   agg     86.5 tok/s  per-stream    88.4  ttft 0.139  reqs 4 err 0
+  decode json       c=1   agg     96.2 tok/s  per-stream    98.6  ttft 0.144  reqs 4 err 0
+
+## Decode
+
+Aggregate tok/s (median per-stream decode tok/s = (completion tokens - 1) / (last - first token time), prefill excluded); window 20.0s per cell, c streaming workers, max_tokens 512, thinking off, greedy. Tokens from usage.completion_tokens.
+
+| prompt | c=1 |
+|---|---:|
+| prose | 66.3 (67.4) |
+| code | 96.4 (98.5) |
+| structured | 86.5 (88.4) |
+| json | 96.2 (98.6) |
+
+TTFT (median over the cell's own worker requests; seconds to the first content delta at concurrency c):
+
+| prompt | c=1 |
+|---|---:|
+| prose | 0.131 |
+| code | 0.119 |
+| structured | 0.139 |
+| json | 0.144 |
+
+_decode: ok (2026-10-31T17:45:55-0500)_
+
+== prefill -> bench/runs/autoresearch-20261031-174339/warmup-prefill
+  prefill   32k     32750 tok      5.05s    6490.5 tok/s
+
+## Prefill
+
+Unique prompts (no prefix-cache hits), max_tokens 1, sequential. Tokens from usage.prompt_tokens.
+
+| target | prompt_tokens | seconds | tok/s |
+|---|---:|---:|---:|
+| 32k | 32750 | 5.05 | 6490.5 |
+
+_prefill: ok (2026-10-31T17:47:25-0500)_
+

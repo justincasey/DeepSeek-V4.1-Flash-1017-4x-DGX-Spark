@@ -1,24 +1,25 @@
 # DeepSeek-V4.1-Flash-1017 on four DGX Sparks
 
 Serve [DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017) in its native
-checkpoint (MXFP4 routed experts, FP8 dense) from four NVIDIA DGX Sparks joined in a switchless QSFP ring, behind
-an OpenAI-compatible API, with a 1,048,576-token window and 16 concurrent sequences.
+checkpoint (MXFP4 routed experts, FP8 dense) from four NVIDIA DGX Sparks joined in a switchless QSFP ring or through
+one RoCE switch, behind an OpenAI-compatible API, with a 1,048,576-token window and 16 concurrent sequences.
 
 The engine is Christopher Owen's [spark-ds41f](https://github.com/christopherowen/spark-ds41f) release **r6w**
 (Apache-2.0): Local Inference Lab's vLLM fork with his patch series, the TileLang SM121 kernel family, DeepSeek's
 TileKernels, sparknet one-shot RoCE collectives and a patched NCCL. `docker/Dockerfile` rebuilds his image from the
 pinned upstreams (spark-ds41f at `2dc95329`), adds his MoE scale-codes overlay and his linear DSpark draft budget
 (r6x's vLLM 0184), and patches of ours (effort aliases, weight snapshots for a quick boot, two upstream vLLM fixes
-ported, two exact prefill savings, a persistent prefix KV cache); `dsv41.sh` serves his `tp4-ring` configuration,
-tuned for this ring, through our controller, on the stock DGX OS 4 KiB-page kernel.
+ported, two exact prefill savings, a persistent prefix KV cache, a direct exchange on a switch); `dsv41.sh` serves
+his `tp4-ring` configuration, tuned for this ring, or sparknet's `switched` transport profile on a RoCE switch
+([The fabric](#the-fabric)), through our controller, on the stock DGX OS 4 KiB-page kernel.
 
 One script, run from a control machine, does everything:
 
 ```bash
-cp .env.example .env        # set NODES (management addresses, ring cable order, rank 0 first)
-./dsv41.sh doctor           # read-only checks on all four nodes; scans the ring and prints the RING_* pins
+cp .env.example .env        # set NODES (management addresses, rank 0 first) and FABRIC (ring | switched)
+./dsv41.sh doctor           # read-only checks on all four nodes; scans the fabric and prints its pins
 ./dsv41.sh fetch            # pinned checkpoint on every node, sha256-verified
-./dsv41.sh build            # serving image on rank 0, shipped over the ring
+./dsv41.sh build            # serving image on rank 0, shipped over the fabric
 ./dsv41.sh stop-other       # optional: free the GPUs from the stack that normally owns them
 ./dsv41.sh start            # memory guards armed, ranks 3..0 started; http://<rank0>:8000/v1
 ./dsv41.sh api-test         # full API conformance suite
@@ -27,33 +28,34 @@ cp .env.example .env        # set NODES (management addresses, ring cable order,
 
 ## Headline numbers
 
-Measured on this ring with the same harnesses, checkpoint `1bae0e1`: v1.0.0 (the previous engine,
+Measured on this site with the same harnesses, checkpoint `1bae0e1`: v1.0.0 (the previous engine,
 [fallback](#fallback)) on 2026-10-17; r6v, tagged `v2.0.0`, on 2026-10-17/18 (image `sha256:875c7c9edc08…`); and
 this repo's current defaults (r6w with the scale-codes overlay and this ring's tuning,
-[what changed](#current-defaults-against-r6v)) on 2026-10-18, with the GPUs locked at 2,200 MHz (site policy; when
-this work started, a leftover lock held them at ~2,184 MHz under load). Decode: greedy, thinking off, `max_tokens`
-512, 30 s windows, tokens counted from `usage`. "Not rerun" marks measurements taken on r6v only. Method and full
-tables under [Benchmarks](#benchmarks).
+[what changed](#current-defaults-against-r6v)) on 2026-10-18 on the cable ring and on 2026-10-31 on the RoCE switch
+(`FABRIC=switched` with the direct exchange of `docker/0009-*.patch`; [Switched fabric](#switched-fabric)), with the GPUs locked at 2,200 MHz
+(site policy; when this work started, a leftover lock held them at ~2,184 MHz under load). Decode: greedy, thinking
+off, `max_tokens` 512, 30 s windows, tokens counted from `usage`. "Not rerun" marks measurements not repeated on
+that configuration. Method and full tables under [Benchmarks](#benchmarks).
 
-| Measurement | v1.0.0 | r6v (`v2.0.0`) | Current defaults (r6w) |
-|---|---|---|---|
-| Decode, one request, prose / code | 35.8 / 55.1 tok/s | 61.4 / 87.2 tok/s | **65.1 / 93.9 tok/s** |
-| Decode, one request, structured / json | 48.8 / 48.0 tok/s | 80.6 / 88.5 tok/s | **84.5 / 93.7 tok/s** |
-| Decode, 4 requests aggregate, prose / code | 89.9 / 132.4 tok/s | 204.4 / 229.4 tok/s | not rerun |
-| Decode, 16 requests aggregate, prose / code | not possible (4 sequences) | 551.8 / 574.7 tok/s | not rerun |
-| Prefill, unique text, 32K / 128K / 512K tokens | 1,902 / 1,724 / 1,282 tok/s | 6,013 / 5,916 / 5,042 tok/s | **6,622 / 6,505 / 5,507 tok/s** |
-| Prefill, unique text, 1M tokens | 968 tok/s | 4,160 tok/s | not rerun |
-| Needle at ~1M prompt tokens | PASS, 985 s (1,000,006 tokens) | PASS, 236.6 s (1,000,006 tokens) | **PASS, 229 s** (1,039,976 tokens) |
-| Same 133,855-token prompt again after a restart | full prefill | full prefill | **TTFT 0.81 s** (20.7 s cold; [Persistent prefix cache](#persistent-prefix-cache)) |
-| Salted cold needle, ~545K prompt tokens | PASS, 547,579 tokens at 1,157 tok/s | PASS, 545,008 tokens at 5,030 tok/s | not rerun |
-| qeval, 75 tasks, greedy | 71/75 (median 48.4 tok/s) | 71/75 (median 86.3 tok/s) | not rerun |
-| Quality gate, 50 exact-answer questions, greedy | 49/50 | 49/50, all 50 answers identical to v1.0.0 | 49/50 |
-| API conformance (`api-test`) | 25/26 | 26/26 | not rerun |
-| Encoding parity (`parity`) | 15/15 | 15/15 | not rerun |
-| Token-id oracle (`bench check`) | 3/6 prompts match | 6/6, three runs | **6/6 against r6v's pin** |
-| KV pool per rank | 2,666,467 tokens in 13 GiB | 8,580,566 tokens in 10.5 GiB (8.18× a full 1M request) | same 10.5 GiB budget; tokens not re-measured |
-| Concurrent sequences at 1M | 4 | 16 | 16 |
-| Boot | ~340 s to API | 396 s first boot, including the TileLang kernel preparation; restart 139-140 s | **restart 121 s** including the prefix KV save and restore (engine up after 97 s), from weight snapshots; ~184 s once per build and configuration ([Quick boot](#quick-boot)) |
+| Measurement | v1.0.0 | r6v (`v2.0.0`) | Current defaults (r6w), ring | Current defaults, switched |
+|---|---|---|---|---|
+| Decode, one request, prose / code | 35.8 / 55.1 tok/s | 61.4 / 87.2 tok/s | 65.1 / 93.9 tok/s | **66.0-66.3 / 95.8-96.1 tok/s** (three boots) |
+| Decode, one request, structured / json | 48.8 / 48.0 tok/s | 80.6 / 88.5 tok/s | 84.5 / 93.7 tok/s | **86.0-86.3 / 95.6-95.9 tok/s** |
+| Decode, 4 requests aggregate, prose / code | 89.9 / 132.4 tok/s | 204.4 / 229.4 tok/s | not rerun | not rerun |
+| Decode, 16 requests aggregate, prose / code | not possible (4 sequences) | 551.8 / 574.7 tok/s | not rerun | not rerun |
+| Prefill, unique text, 32K / 128K / 512K tokens | 1,902 / 1,724 / 1,282 tok/s | 6,013 / 5,916 / 5,042 tok/s | 6,622 / 6,505 / 5,507 tok/s | **6,717 / 6,555 / 5,552 tok/s** |
+| Prefill, unique text, 1M tokens | 968 tok/s | 4,160 tok/s | not rerun | not rerun |
+| Needle at ~1M prompt tokens | PASS, 985 s (1,000,006 tokens) | PASS, 236.6 s (1,000,006 tokens) | PASS, 229 s (1,039,976 tokens) | **PASS, 215.9 s** (999,996 tokens) |
+| Same 133,855-token prompt again after a restart | full prefill | full prefill | **TTFT 0.81 s** (20.7 s cold; [Persistent prefix cache](#persistent-prefix-cache)) | not rerun (the ring's KV snapshot restored at the first switched boot) |
+| Salted cold needle, ~545K prompt tokens | PASS, 547,579 tokens at 1,157 tok/s | PASS, 545,008 tokens at 5,030 tok/s | not rerun | not rerun |
+| qeval, 75 tasks, greedy | 71/75 (median 48.4 tok/s) | 71/75 (median 86.3 tok/s) | not rerun | not rerun |
+| Quality gate, 50 exact-answer questions, greedy | 49/50 | 49/50, all 50 answers identical to v1.0.0 | 49/50 | 49/50 |
+| API conformance (`api-test`) | 25/26 | 26/26 | not rerun | 26/26 |
+| Encoding parity (`parity`) | 15/15 | 15/15 | not rerun | 14/14 (3 cases skipped: not expressible in the OpenAI API, or covered by `api-test`) |
+| Token-id oracle (`bench check`) | 3/6 prompts match | 6/6, three runs | **6/6 against r6v's pin** | **6/6 against r6v's pin**, and the long-prompt oracle 3/3 |
+| KV pool per rank | 2,666,467 tokens in 13 GiB | 8,580,566 tokens in 10.5 GiB (8.18× a full 1M request) | same 10.5 GiB budget; tokens not re-measured | same |
+| Concurrent sequences at 1M | 4 | 16 | 16 | 16 |
+| Boot | ~340 s to API | 396 s first boot, including the TileLang kernel preparation; restart 139-140 s | **restart 121 s** including the prefix KV save and restore (engine up after 97 s), from weight snapshots; ~184 s once per build and configuration ([Quick boot](#quick-boot)) | restart 116-123 s (engine up after 94-102 s); 132 s on the new build's first boot |
 
 Restart is `stop` + `start` + `smoke`, wall time. Temperature-0 output does not depend on load: on r6v an identical
 request returned the same tokens and logprobs alone, eight at once, staggered, mixed with other prompts, and with or
@@ -75,11 +77,16 @@ prompt set) and MemAvailable stayed at 17.7-19.5 GiB per node.
   saver. spark-ds41f's own site runs `tp4-ring` on a 64 KiB kernel with its memory saver; its external site receipt
   ran the same sizing on a stock 4 KiB kernel with 18-21 GiB MemAvailable per node ([Credits](#credits)). Nothing
   else may hold the GPUs: `start` refuses to run next to any container not in `ALLOWED_CONTAINERS`.
-- **A ring of four QSFP cables**: each Spark cabled to its two neighbours; ranks 0-2 and 1-3 share no cable.
-  **Both PCIe RoCE functions of every cable must be up** (on GB10 each cable shows as `rocep1s0f*` and
-  `roceP2p1s0f*`), each with exactly one IPv4 address, one subnet per function per cable, the same prefix length
-  everywhere, MTU 9000, and the IPv4 RoCE v2 GID at the same index on all of a node's ring ports
-  ([The ring](#the-ring)).
+- **A fabric**, one of ([The fabric](#the-fabric)):
+  - `FABRIC=ring`: **a ring of four QSFP cables**, each Spark cabled to its two neighbours; ranks 0-2 and 1-3 share
+    no cable. **Both PCIe RoCE functions of every cable must be up** (on GB10 each cable shows as `rocep1s0f*` and
+    `roceP2p1s0f*`), each with exactly one IPv4 address, one subnet per function per cable.
+  - `FABRIC=switched`: **every Spark on one RoCE switch**, one subnet per rail shared by all four nodes (a GB10
+    cable carries two rails, `rocep1s0f*` and `roceP2p1s0f*`). For lossless RoCE the switch runs PFC and ECN on the
+    class DSCP 26 maps to, and every node trusts DSCP and runs PFC on priority 3 ([Switched](#switched)).
+
+  Either way: the same prefix length everywhere, MTU 9000, and the IPv4 RoCE v2 GID at the same index on all of a
+  node's fabric ports.
 - **A management LAN** reaching all four nodes (bootstrap, ssh, the API).
 - **~480 GiB free NVMe per node** at the same `MODELS_DIR` path (the checkpoint is 475 GiB). Engram shards 47 and
   48 must be regular files on a local filesystem (not NFS, FUSE or SMB): the io_uring row reader reads them.
@@ -90,8 +97,8 @@ prompt set) and MemAvailable stayed at 17.7-19.5 GiB per node.
 - **Docker** with GPU support on every node, and the **Hugging Face CLI** at `HF_BIN` (`fetch` downloads a quarter
   of the checkpoint on each rank).
 - **A control machine** (a Mac works) with bash 4 or newer (`brew install bash`), python3, curl, rsync, and
-  key-based ssh to all four nodes as `SSH_USER`; the nodes need key-based ssh to their ring neighbours' cable
-  addresses (checkpoint and image copies run node to node).
+  key-based ssh to all four nodes as `SSH_USER`; the nodes need key-based ssh to each other's fabric addresses
+  (checkpoint and image copies run node to node).
 - Optional host tuning that `doctor` reports but never applies: `vm.compaction_proactiveness=0` (WARN otherwise:
   decode stalls) and `vm.watermark_boost_factor=0` (NOTE otherwise: a watermark boost hides memory from
   MemAvailable, which the guard reads).
@@ -104,17 +111,18 @@ cd DeepSeek-V4.1-Flash-1017-4x-DGX-Spark
 cp .env.example .env
 ```
 
-Edit `.env`: `NODES` lists the four management addresses in ring cable order, rank 0 first. The `RING_*` pins in
-`.env.example` are this site's; on another ring comment out `RING_PREFIX` (the ring is then scanned at every
-`start`), run `doctor`, and paste the values it prints if you want pins back. Everything else has a working
-default ([Configuration](#configuration)). Then:
+Edit `.env`: `NODES` lists the four management addresses, rank 0 first (`FABRIC=ring`: in ring cable order), and
+`FABRIC` says how they are joined. The `SWITCH_*` pins in `.env.example` are this site's (`RING_*`, commented out,
+are its ring until 2026-10-31); on another site comment out the prefix key (`SWITCH_PREFIX` or `RING_PREFIX`: the
+fabric is then scanned at every `start`), run `doctor`, and paste the values it prints if you want pins back.
+Everything else has a working default ([Configuration](#configuration)). Then:
 
 | Step | What it does |
 |---|---|
-| `doctor` | read-only. Ring: scans every node, checks pins against the live ring, pings each next rank across its cable, warns on MTU ≠ 9000. Per node: docker, image ID equal to rank 0's and built from spark-ds41f `2dc95329` (image label), GPU processes, MemAvailable, NVMe and `/` free space, kernel and page size, sysctls, `CPUSET` equal to the node's fast cores, `DRI_CARD` present, passwordless sudo, `systemd-run`, checkpoint shard count, Engram shard filesystem and fragmentation (`e4defrag -c`), memory guard state |
-| `fetch` | sizes the pinned files from the Hugging Face API and splits them into four size-balanced parts; each rank downloads its part over its own uplink. Rank 0 gathers the parts over the cables, fans the full tree back out, then every node is sha256-verified against `config/DeepSeek-V4.1-Flash-1017.sha256`. Resumable: files a node already holds at full size are not downloaded again |
+| `doctor` | read-only. Fabric: scans every node, checks pins against the live fabric, pings each next rank across its cable (ring) or every other rank on every rail (switched), warns on MTU ≠ 9000, and on a switch warns when a rail does not trust DSCP or runs no PFC on `ROCE_TC`'s priority (`mlnx_qos -i`, read-only). Per node: docker, image ID equal to rank 0's and built from spark-ds41f `2dc95329` (image label), GPU processes, MemAvailable, NVMe and `/` free space, kernel and page size, sysctls, `CPUSET` equal to the node's fast cores, `DRI_CARD` present, passwordless sudo, `systemd-run`, checkpoint shard count, Engram shard filesystem and fragmentation (`e4defrag -c`), memory guard state |
+| `fetch` | sizes the pinned files from the Hugging Face API and splits them into four size-balanced parts; each rank downloads its part over its own uplink. Rank 0 gathers the parts over the fabric (ring: 1→0, 3→0, 2→1→0; switched: 1, 2, 3→0 in parallel), fans the full tree back out, then every node is sha256-verified against `config/DeepSeek-V4.1-Flash-1017.sha256`. Resumable: files a node already holds at full size are not downloaded again |
 | `verify` | the sha256 check alone, all four nodes in parallel |
-| `build` | rsyncs `docker/` to `BUILD_DIR` on rank 0 and builds `IMAGE` there ([The image](#the-image)), runs spark-ds41f's GPU import smoke when rank 0 has 24 GiB available, streams the image over the cables with `docker save \| docker load` (0→1 and 0→3, then 1→2), and prints the image ID on every node |
+| `build` | rsyncs `docker/` to `BUILD_DIR` on rank 0 and builds `IMAGE` there ([The image](#the-image)), runs spark-ds41f's GPU import smoke when rank 0 has 24 GiB available, streams the image over the fabric with `docker save \| docker load` (0→1 and 0→3, then 1→2), and prints the image ID on every node |
 
 ## Run
 
@@ -129,8 +137,8 @@ default ([Configuration](#configuration)). Then:
 ./dsv41.sh print-serve 0   # the exact guard arm + docker run + vllm serve for one rank, no side effects
 ```
 
-`start` builds every rank's command first, so a configuration error starts nothing. It re-scans the ring and
-refuses stale `RING_*` pins, refuses if foreign containers run, stops any old ranks, drops the page cache, locks the
+`start` builds every rank's command first, so a configuration error starts nothing. It re-scans the fabric and
+refuses stale `RING_*`/`SWITCH_*` pins, refuses if foreign containers run, stops any old ranks, drops the page cache, locks the
 GPU clocks on every node at `GPU_CLOCKS` MHz (2,200, site policy), and installs the memory guard on every node (a
 node whose installed copy already matches the pinned checksums keeps it). Then it arms each node's startup guard and
 runs the container on ranks 3, 2 and 1 (headless) in parallel, and finally on rank 0. It polls `/health` every
@@ -233,10 +241,16 @@ port. The key never appears in a process argv or in `print-serve`: `start` passe
 - **Context**: 1,048,576 tokens per request (`MAX_MODEL_LEN`), `MAX_NUM_SEQS` (16) sequences at once; more
   requests queue.
 
-## The ring
+## The fabric
 
-Four Sparks, four cables, no switch: rank r is cabled to r+1 and r−1 (mod 4); ranks 0-2 and 1-3 share no cable.
-Every cable carries both PCIe RoCE functions, so each neighbour is reached over two lanes.
+`FABRIC` picks one of two layouts. Both run the same image, the same engine settings and the same collectives
+stack (sparknet one-shot RoCE collectives for small all-reduces and all-gathers, the image's patched NCCL 2.30.7 for
+the rest); they differ in the RoCE routes and the NCCL/sparknet transport profile.
+
+### Ring
+
+`FABRIC=ring`. Four Sparks, four cables, no switch: rank r is cabled to r+1 and r−1 (mod 4); ranks 0-2 and 1-3
+share no cable. Every cable carries both PCIe RoCE functions, so each neighbour is reached over two lanes.
 
 **How the pins are derived.** `doctor` (and `start` when `RING_PREFIX` is unset) runs a read-only scan on every
 node: each up RoCE netdev with exactly one IPv4 address, its subnet, its RDMA device, the index of its IPv4 RoCE v2
@@ -252,7 +266,7 @@ by subnet, never by name, so any port-to-neighbour cabling works. From the scan:
 
 `doctor` then pings each next rank across its cable and prints the values. Pinned (all seventeen keys, or none),
 `print-serve` needs no ssh; `doctor` and `start` still re-scan and refuse a pin that no longer matches the live ring
-(a link flap can move a GID index). `fetch` and `build` always scan, because they need the cable addresses.
+(a link flap can move a GID index). `fetch` and `build` always scan, because they need the fabric addresses.
 
 **What each rank gets** (spark-ds41f's `scripts/topology.py` mapping): `NCCL_IB_HCA` is the exact-match set of the
 node's ring devices, `NCCL_IB_GID_INDEX` and `SPARKNET_ROCE_GID_INDEX` its GID index, `NCCL_IB_SUBNET_PREFIX_LEN`
@@ -266,7 +280,70 @@ no tree/PAT/NVLS, runtime connect). Traffic between the two ranks that share no 
 row exchange) is relayed through the neighbours by spark-ds41f's vLLM patch 0180 (PyNCCL all-to-all over the ring).
 Nothing from the host is mounted over NCCL.
 
-The rendezvous port (`MASTER_PORT`) and the cables are not authenticated: keep them private.
+### Switched
+
+`FABRIC=switched`. Every Spark's RoCE rails on one switch; each rail is a subnet that all four nodes share, so every
+rank reaches every other directly on every rail. This site, since 2026-10-31: a MikroTik CRS804-4DDQ, one cable per
+Spark (f1 cage, 200G), rail 0 `10.100.10.0/24` on `rocep1s0f1` and rail 1 `10.100.11.0/24` on `roceP2p1s0f1`.
+
+**How the pins are derived.** The same read-only scan as the ring. The rails are the subnets all four ranks hold,
+sorted, so stripe i is the same rail on every node; a node with two ports on one subnet fails. `SWITCH_HCAS_r` are
+rank r's RDMA devices on the rails in that order, `SWITCH_GID_r` their one IPv4 RoCE v2 GID index,
+`SWITCH_MGMT_r` the bootstrap netdev, `SWITCH_PREFIX` the rails' prefix length (thirteen keys, or none). `doctor`
+pings every other rank on every rail.
+
+**What each rank gets** (sparknet's `switched` profile and `topology.render.node_environment` for transport
+`oneshot-switched`; the rendered environment passes sparknet's own profile and transport checks): `NCCL_IB_HCA` is
+the exact-match set of the rail devices, `SPARKNET_ROCE_HCA` the first two (sparknet's stripe limit) and
+`SPARKNET_ROCE_TOPOLOGY=direct`, so the one-shot collectives write straight to every peer; NCCL keeps its own
+topology and algorithm selection (no forced ring, no switchless-ring patch controls) with up to 8 channels, 1 MiB
+buffers and `NCCL_CUMEM_ENABLE=0`; one-shot all-gathers go up to 4 MiB. `NCCL_IB_TC` and
+`SPARKNET_ROCE_TRAFFIC_CLASS` are `ROCE_TC` (106: DSCP 26, ECT). With NCCL INFO logging, every prefill all-gather
+(5-250 MB) runs Ring/Simple on all 8 channels.
+
+**Direct exchange** (`docker/0009-*.patch`). At four ranks the rank-order reduce-scatter's chunk exchange and
+Engram's sequence-parallel row exchange (PyNCCL `all_to_all_rows`) relay the opposite rank's rows through a
+neighbour only when `SPARKNET_ROCE_TOPOLOGY=ring4`. On the switch every rank sends to and receives from every other
+in one group: one serialized round instead of two, 3 chunk-units per rank instead of 4. Only bytes move, so the
+output is bit-identical (token oracle 6/6, the long-prompt oracle's token ids and top-5 logprobs on 6K/46K/109K
+prompts unchanged). The switch carried 15% fewer bytes during the prefill bench (2,072 → 1,757 GB).
+
+**Measured and rejected** on the switch (2026-10-31, the autoresearch harness: c=1 decode + 32K/128K/512K
+prefill, a restart each, all bit-identical): `NCCL_BUFFSIZE` 4 MiB (neutral, −0.4 GiB); `NCCL_P2P_NET_CHUNKSIZE`
+512 KiB (identical); `NCCL_MAX_NCHANNELS` 16 (+0.2 points across two boots, within noise, −0.3 GiB);
+`NCCL_IB_MERGE_NICS=0` (prefill −1.4 points); sparknet over one rail (decode −0.9 points); one-shot all-gathers up
+to 8 MiB (32K prefill −1.6%: NCCL's ring beats one-shot at 5 MB) or 2 MiB (128K −2%);
+`NCCL_NCHANNELS_PER_NET_PEER` 1 (prefill −4.5 points: one rail per peer) or 4 (32K −4%, PFC pauses 50 → 4,890: the
+exchange's 3:1 incast); `NCCL_IB_QPS_PER_CONNECTION=2` (32K −1.5%, 930 pauses); `NCCL_CROSS_NIC=0` (32K −2%).
+`NCCL_ALGO=Ring` and `NCCL_PAT_ENABLE=0` would change nothing: NCCL already picks the ring. On every axis sparknet's
+`switched` profile was the best point measured.
+
+**Lossless RoCE.** One-shot collectives send to all three peers at once, so every receiver sees 3:1 incast. Without
+flow control the switch tail-drops and RoCE falls back to go-back-N retransmits. This site's setup:
+
+- Switch (RouterOS 7.24, `/interface/ethernet/switch/qos`, MikroTik's RoCE example): profiles `roce` (DSCP 26 →
+  traffic class 3) and `cnp` (DSCP 48 → class 6); tx queues 1 and 3 in the high-priority group at weight 1, ECN on
+  queue 3, queue 6 strict priority; PFC profile `pfc-tc3` (rx and tx) on class 3; the four Spark ports set to
+  `trust-l3=keep pfc=pfc-tc3 egress-rate-queue3=200.0Gbps`. LLDP DCBX is on. Exports: `pre-pfc-20261031` and
+  `post-pfc-20261031` on the switch.
+- Every node: `roce-qos.service` (a oneshot unit running `/usr/local/sbin/roce-qos.sh`) runs
+  `mlnx_qos -i <rail> --trust dscp --pfc 0,0,0,1,0,0,0,0` on both rail netdevs at boot: trust DSCP (26 → priority 3
+  by the default map) and PFC on priority 3. The driver then gives priority 3 its own lossless receive buffer.
+  DCQCN (the NIC's ECN reaction point) is on by default in the inbox mlx5 driver.
+- Traffic without `ROCE_TC` (TCP, other stacks' RoCE) stays in class 1, best effort.
+
+Measured with `ib_write_bw` (4 QPs, 1 MiB, rail 0), three senders into rank 0 for 15 s:
+
+| `--tclass` | Senders' Gb/s | Switch tail drops | Receiver out-of-sequence | PFC pauses (switch tx / node tx) | ECN-marked at the receiver |
+|---|---|---|---|---|---|
+| none (class 1) | 35.4 / 42.4 / 42.7 | 420,259 | 153,499 | 0 / 0 | 0 |
+| 106 (class 3) | 40.3 / 40.0 / 40.3 | 0 | 0 | 244,186 / 48,140 | 20,644,386 |
+
+`doctor` warns when a rail does not trust DSCP or runs no PFC on `ROCE_TC`'s priority.
+
+### Both
+
+The rendezvous port (`MASTER_PORT`) and the fabric are not authenticated: keep them private.
 
 ## Configuration
 
@@ -280,9 +357,10 @@ key; the groups:
 
 | Group | Keys | Defaults and notes |
 |---|---|---|
-| The Sparks | `NODES`, `SSH_USER` | four management addresses in ring cable order, rank 0 first (rank 0 serves the API); `spark` |
+| The Sparks | `NODES`, `SSH_USER` | four management addresses, rank 0 first (rank 0 serves the API; ring: in cable order); `spark` |
+| Fabric | `FABRIC`, `ROCE_TC` | `ring` (four-cable loop, spark-ds41f `tp4-ring`) or `switched` (one RoCE switch, sparknet `switched`); `ROCE_TC` (switched only) is the RoCE traffic class byte NCCL and sparknet set, 106 = DSCP 26 for the switch's lossless class, empty = unmarked ([The fabric](#the-fabric)) |
 | Checkpoint | `MODELS_DIR`, `MODEL_REPO`, `MODEL_REVISION`, `MODEL_NAME`, `CHECKSUMS`, `HF_BIN` | `/home/spark/models`, same absolute path on every node (Engram shards 47/48 must be local files); revision `1bae0e1` pinned with a sha256 manifest; mounted read-only at `/models` |
-| Image and fabric | `IMAGE`, `BUILD_DIR`, `CACHE_DIR`, `CONTAINER`, `MASTER_PORT` | `dsv41-1017-ds41f:r6w`; `CACHE_DIR` is mounted at `/cache` on every node and keeps the JIT/TileLang/Triton caches, weight snapshots and KV snapshots (~83 GiB per node) across boots; `CONTAINER` also names the guard unit (`$CONTAINER-memguard.service`); rendezvous on port 9999 |
+| Image and fabric | `IMAGE`, `BUILD_DIR`, `CACHE_DIR`, `CONTAINER`, `MASTER_PORT` | `dsv41-1017-ds41f:r6w-direct` (r6w plus `docker/0009-*.patch`; `:r6w` is the build before it); `CACHE_DIR` is mounted at `/cache` on every node and keeps the JIT/TileLang/Triton caches, weight snapshots and KV snapshots (~83 GiB per node) across boots; `CONTAINER` also names the guard unit (`$CONTAINER-memguard.service`); rendezvous on port 9999 |
 | Serving | `SERVED_NAME`, `HOST`, `PORT`, `API_KEY` | `deepseek-v4.1-flash` on `0.0.0.0:8000`; `API_KEY` empty = no authentication |
 | Sizing | `MAX_MODEL_LEN`, `MAX_NUM_SEQS`, `MAX_NUM_BATCHED_TOKENS`, `GPU_MEMORY_UTILIZATION`, `KV_CACHE_MEMORY_BYTES` | 1,048,576 tokens, 16 sequences, 24,576 tokens per step (the long-prefill threshold is this minus the decode rows, `MAX_NUM_SEQS` × (k+1): 24,464 at the defaults); a fixed 10.5 GiB KV budget per rank (`11274289152`; empty = vLLM profiling); utilization 0.82 is always passed and then only gates vLLM's startup free-memory check |
 | Engine | `PREFIX_CACHING`, `PREFIX_CACHE_RETENTION_INTERVAL`, `KERNEL_BACKEND`, `GENERATION_DEFAULTS`, `TEXT_ONLY`, `MAX_IMAGES` | prefix caching on with retention interval 8192; `tilelang` (the TileLang SM121 family) or `b12x` (spark-ds41f's pre-r6 backend, in the same image); `{"temperature":1.0,"top_p":1.0}`; images on, 8 per prompt |
@@ -292,7 +370,7 @@ key; the groups:
 | Memory guard | `STARTUP_MEMGUARD_GIB`, `STARTUP_MEMGUARD_INTERVAL`, `STARTUP_MEMGUARD_WAIT`, `MEMGUARD_GIB`, `MEMGUARD_INTERVAL` | 5 GiB sampled every 0.25 s while loading (waits up to 120 s for its container); 3 GiB every 2 s once the API answers. The startup threshold must exceed the steady one ([Known limits](#known-limits)) |
 | Other stacks | `ALLOWED_CONTAINERS`, `STOP_OTHER`, `RESTORE_OTHER` | containers that may keep running beside the ranks (`.env.example`: `mentatd glm53-nfs`); shell commands for `stop-other` / `restore-other` |
 | Advanced | `EXTRA_VLLM_ARGS`, `EXTRA_DOCKER_ARGS` | appended to `vllm serve` / to `docker run` before the image (`-e K=V` overrides an engine variable) |
-| Ring pins | `RING_PREFIX`, `RING_HCA_PREV_0..3`, `RING_HCA_NEXT_0..3`, `RING_GID_0..3`, `RING_MGMT_0..3` | all seventeen or none ([The ring](#the-ring)); `.env.example` carries this site's values |
+| Fabric pins | `RING_PREFIX`, `RING_HCA_PREV_0..3`, `RING_HCA_NEXT_0..3`, `RING_GID_0..3`, `RING_MGMT_0..3`; `SWITCH_PREFIX`, `SWITCH_HCAS_0..3`, `SWITCH_GID_0..3`, `SWITCH_MGMT_0..3` | the `FABRIC`'s set only, all of it or none ([Ring](#ring), [Switched](#switched)); `.env.example` carries this site's switch pins, and its former ring's commented out |
 
 `./dsv41.sh print-serve RANK` prints the exact command a rank runs with your configuration.
 
@@ -302,15 +380,15 @@ key; the groups:
 |---|---|
 | Model | DeepSeek-V4.1-Flash-1017, native checkpoint (MXFP4 routed experts, FP8 dense, BF16 drafter head), revision `1bae0e1`, every file pinned by sha256 in `config/`; every node keeps a full local copy |
 | Engine | spark-ds41f r6w by Christopher Owen: Local Inference Lab's vLLM `integration/karmic-kraken-beta` at `19f2c20` + his r6w vLLM series (173 patches: r6v's 172 plus 0181, the routed SwiGLU and MXFP8 cast over the live tiles), his lossless MoE scale-codes overlay (`a250ace`) and his linear DSpark draft budget (r6x's vLLM 0184, rebased as `docker/0007-*.patch`); B12X `236ddff` + 11 patches (checkpoint loader, vision tower kernels, the alternative kernel backend); TileLang 0.1.15 `b95ee4f` + 4 patches (among them SM12x block-scaled MMA); DeepSeek TileKernels 2.0.0 `66258df` + 1 patch; sparknet 0.3.0 `3bc8d10`; NCCL 2.30.7 rebuilt for SM121 + 4 patches (the IB send-path fence NVIDIA/nccl#2393, bidirectional switchless rings, balanced channels, adaptive small-ring threads); runtime base the vLLM nightly image `af1c014` (CUDA 13.0.2), pinned by digest |
-| Our patches | `docker/0001-*.patch`: `reasoning_effort` `minimal` → 50 and `medium` → 75, which the fork rejected with a 400; `docker/0002-*.patch`: per-rank snapshots of the loaded weights, restored on later boots ([Quick boot](#quick-boot)); `docker/0003-*.patch` and `docker/0004-*.patch`: ports of vllm-project/vllm#60945 (no lookahead past the last logit in block verification's residual mass) and #61161 (fresh acceptance draws per draft step); `docker/0005-*.patch`: the CED decoder skipped on non-final prefill chunks no later window reads (exact: token oracle, greedy text and logprobs unchanged); `docker/0006-*.patch`: the MTP hidden buffer DSpark never reads dropped; `docker/0008-*.patch`: the prefix KV cache saved before a stop and restored at start ([Persistent prefix cache](#persistent-prefix-cache)) |
+| Our patches | `docker/0001-*.patch`: `reasoning_effort` `minimal` → 50 and `medium` → 75, which the fork rejected with a 400; `docker/0002-*.patch`: per-rank snapshots of the loaded weights, restored on later boots ([Quick boot](#quick-boot)); `docker/0003-*.patch` and `docker/0004-*.patch`: ports of vllm-project/vllm#60945 (no lookahead past the last logit in block verification's residual mass) and #61161 (fresh acceptance draws per draft step); `docker/0005-*.patch`: the CED decoder skipped on non-final prefill chunks no later window reads (exact: token oracle, greedy text and logprobs unchanged); `docker/0006-*.patch`: the MTP hidden buffer DSpark never reads dropped; `docker/0008-*.patch`: the prefix KV cache saved before a stop and restored at start ([Persistent prefix cache](#persistent-prefix-cache)); `docker/0009-*.patch`: the four-rank exchanges relay through a neighbour only on the ring, and go direct on a switch ([Switched](#switched)) |
 | Kernels | the TileLang SM121 family (sparse MLA, MXFP4 indexer, FP8 and BF16 projections, FP8 × FP4 routed experts, vocabulary heads, RoPE, compressor, KV writers, Engram gate/hash/gather, WO), DeepSeek's TileKernels for the MoE gate, SwiGLU/quant casts and mHC, L2 weight prefetch during decode (`KERNEL_BACKEND=tilelang`) |
 | Precision | spark-ds41f follows DeepSeek's reference `inference/model.py`: FP32 logits from an exact packed BF16 head, FP32 mHC projection, shared-expert SwiGLU in FP32, MoE partials rounded once per rank, WO-A input through `act_quant`; batch-invariant reductions and rank-ordered collectives (his description; [Credits](#credits)) |
-| Engram | tables read from local disk by a native io_uring row reader (`--engram-config` `table_memory: disk`), projections sharded over TP, sequence-parallel row exchange relayed on the ring |
+| Engram | tables read from local disk by a native io_uring row reader (`--engram-config` `table_memory: disk`), projections sharded over TP, sequence-parallel row exchange relayed through a neighbour on the ring (patch 0180), direct on a switch (`docker/0009-*.patch`) |
 | Drafting | DSpark (the drafter in the checkpoint): k=6, greedy drafts, block verification, adaptive verification by spark-ds41f's linear draft budget (`docker/0007-*.patch`): each step's draft budget priced at a fixed row cost of 0.01, nothing timed at boot; the draft vocabulary and Markov heads run in NVFP4 (`VLLM_DS41_DRAFT_NVFP4_HEAD=1`, `VLLM_DS41_MARKOV_NVFP4=1`: draft step 2.60 → 1.91 ms), and the target still commits every token |
 | Graphs | `FULL_AND_PIECEWISE` CUDA graphs captured at 1, 2, 3, 4, 6, 8, 12 … 32, then every 8th row up to `MAX_NUM_SEQS` × (k+1) = 112; kernels prepared before memory profiling, `--jit-monitor-mode warn` logs any JIT after ready |
 | Split | TP4 across the four Sparks (attention, dense and experts), vLLM's multiprocess executor over `--nnodes 4`; rank 0 serves the API, ranks 1-3 headless; one prefill at a time |
 | KV | fixed 10.5 GiB per rank: 8,580,566 tokens, 8.18× a full 1M request (measured at boot on r6v) |
-| Fabric | sparknet one-shot collectives up to 2 MiB, patched NCCL ring above that, both PCIe functions per cable ([The ring](#the-ring)) |
+| Fabric | ring: sparknet one-shot collectives up to 2 MiB over the neighbours, patched NCCL ring above that, both PCIe functions per cable ([Ring](#ring)); switched: one-shot collectives straight to every peer over both rails, NCCL with its own topology selection, lossless RoCE class via PFC/ECN ([Switched](#switched)) |
 | Host | per rank: the ten fast cores, a 112 GiB cgroup limit, `seccomp=unconfined` (Docker's default profile blocks io_uring), `--ipc=host`, unlimited memlock; spark-ds41f's fail-closed memory guard as a systemd unit per node; GPU clocks locked at 2,200 MHz (`nvidia-smi -lgc`, site policy) at every `start` |
 | Boot | each rank restores its loaded weights (71.86 GiB) from a snapshot under `CACHE_DIR` at 10-12.7 GB/s and reruns post-processing on them; fail-closed to the checkpoint ([Quick boot](#quick-boot)); then the prefix KV cache (10.5 GiB per rank) the last `stop` saved, all ranks or none ([Persistent prefix cache](#persistent-prefix-cache)) |
 | Controller | `dsv41.sh`: bash over ssh from the control machine; workers launched in parallel, `/health` polled every second; `print-serve` shows each rank's exact commands |
@@ -328,11 +406,12 @@ vLLM tree from his in this order: our `docker/0001-*.patch` and `docker/0002-*.p
 (spark-ds41f `a250ace`, three whole files, each pinned by sha256, committed as one commit); our
 `docker/0003-*.patch` to `docker/0006-*.patch`; his DSpark profile-replays overlay (`2ce3644`, one file, committed
 the same way); `docker/0007-*.patch`, his r6x vLLM 0184 rebased onto that tree, whose `adaptive_verification.py`
-(replacing the profile-replays file) and `speculative.py` must equal his overlay's by sha256; and our
-`docker/0008-*.patch`. All of it is Python, so his native extensions build unchanged; the patch head and tree after
-each overlay, after 0007 and after 0008 are pinned. Then a TileLang SM12x block-scaled MMA check, file checks of our
-patches, both overlays and the linear budget, his memory-guard and smoke scripts under `/opt/spark-ds41f`, and image
-labels that `doctor` checks. Any mismatch fails the build. The image contains no weights. spark-ds41f's external
+(replacing the profile-replays file) and `speculative.py` must equal his overlay's by sha256; our
+`docker/0008-*.patch`; and our `docker/0009-*.patch`. All of it is Python, so his native extensions build
+unchanged; the patch head and tree after each overlay, after 0007, after 0008 and after 0009 are pinned. Then a
+TileLang SM12x block-scaled MMA check, file checks of our patches, both overlays and the linear budget, his
+memory-guard and smoke scripts under `/opt/spark-ds41f`, and image labels that `doctor` checks. Any mismatch fails
+the build. The image contains no weights. spark-ds41f's external
 4 KiB site reports its build at 630 s with MemAvailable never below 73.7 GiB.
 
 ### Quick boot
@@ -505,6 +584,56 @@ re-reads the expert weights, which cancels the gain.
 - `VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD=2048`;
 - `MAX_NUM_BATCHED_TOKENS` 28,672 (prefill +9.15%, MemAvailable down to 11.2 GiB) and 32,768 (~1 point more prefill
   than 24,576, idle MemAvailable 13.7 → 9.1 GiB; declined to keep the headroom).
+
+### Switched fabric
+
+The current defaults, unchanged image and settings, on 2026-10-31 behind the MikroTik CRS804-4DDQ with
+`FABRIC=switched` ([Switched](#switched)): one boot, a discarded warm-up pass, then decode, prefill, the quality gate,
+the corruption probe, `bench check`, `bench spec`, `parity` and `api-test`. Record:
+[`bench/records/2026-10-31-switched`](bench/records/2026-10-31-switched/summary.md), with the switch and RoCE
+counters in `fabric.log`.
+
+| Measurement | Ring (2026-10-18) | Switched (2026-10-31) | Change |
+|---|---:|---:|---:|
+| Decode c=1, prose / code (tok/s) | 65.1 / 93.9 | 67.1 / 97.7 | +3.1% / +4.0% |
+| Decode c=1, structured / json | 84.5 / 93.7 | 87.6 / 97.2 | +3.7% / +3.7% |
+| Decode c=8, prose / code / structured / json | 386.3 / 321.7 / 479.7 / 370.2 | 347.3 / 335.2 / 418.3 / 522.6 | boot-bimodal ([Known limits](#known-limits)) |
+| Prefill 32K / 128K / 512K (tok/s) | 6,622 / 6,505 / 5,507 | 6,484 / 6,478 / 5,489 | -2.1% / -0.4% / -0.3% |
+| Quality gate / corruption probe / token oracle | 49/50, 9/13, 6/6 | 49/50, 9/13, 6/6 | |
+
+c=1 decode is **+3.6%** on the mean: the one-shot all-reduces reach every peer in one hop instead of the ring's
+relay. Prefill, carried by NCCL's large collectives, holds within 2% on half the per-node fabric bandwidth (one
+200G cable per Spark instead of two). Over the whole run the switch dropped no packet in any queue, the lossless
+class carried ~337 million packets per port, and no rail logged a new out-of-sequence or sequence error; ECN marked
+31-71 thousand packets per node and DCQCN slowed the senders instead.
+
+**Direct exchange** (`docker/0009-*.patch`, image `:r6w-direct`), measured the same day with `autoresearch.sh`
+against the relayed `:r6w` build on the same harness, each boot after a discarded warm-up: two relayed boots (the
+harness validation run and run #39) and two boots of the shipped direct configuration (runs #40 and #54). Decode
+also counts runs #42 and #49, whose single NCCL changes (p2p chunk size, 16 channels) cannot reach c=1 decode, which
+runs on sparknet's one-shot collectives. Run #54's harness decode read prose and code ~4% low (63.4 / 91.8; structured
+and json normal), cause unknown: rerun on the same boot right after, prose and code read 65.9 / 95.8, the GPU clocks
+were locked at 2,184-2,197 MHz on every node with no throttle reason, and DSpark acceptance per prompt type equalled
+the first switched boot's; that rerun replaces its decode cells. Record:
+[`bench/records/2026-10-31-switched-direct`](bench/records/2026-10-31-switched-direct/summary.md) (run #40, with run
+#39 in `relayed-baseline/` and the 1M needle in `needle/`).
+
+| Measurement | Relayed (2 boots) | Direct (2 boots; decode 3) | Change of the means |
+|---|---:|---:|---:|
+| Prefill 32K (tok/s) | 6,466-6,493 | 6,717-6,746 | +3.9% |
+| Prefill 128K | 6,376-6,477 | 6,503-6,555 | +1.6% (the ranges almost touch: about noise-sized) |
+| Prefill 512K | 5,471-5,490 | 5,551-5,552 | +1.3% |
+| Decode c=1, prose / code | 65.9-66.4 / 96.4-96.5 | 65.9-66.3 / 95.8-96.1 | -0.4% on the mean of four types, within boot noise (the changed path does not run in c=1 decode) |
+| Bytes the switch ports sent during the prefill bench | 2,072-2,073 GB | 1,752-1,757 GB | -15.3% |
+| Token oracle / long-prompt oracle | 6/6, 3/3 | 6/6, 3/3 | bit-identical |
+| 1M needle | | PASS, 999,996 tokens in 215.9 s (4,632 tok/s) | ring: 4,541 tok/s |
+
+The fabric bytes and 32K are the firm signals; 128K and 512K are about one noise width. Against the ring record
+(one boot each, 2026-10-18) the direct build is ahead on prefill (32K +1.4 to +1.9%, 128K and 512K within 1%) and on
+decode c=1 (+1.7 to +2.1%; run #54's harness cells read -0.3% before the rerun above); the first switched boot read
++3.6% decode, which later boots of both switched builds did not repeat. The NCCL and sparknet settings rejected
+around it are listed under [Switched](#switched); with the relay gone the fabric is a few percent of prefill and
+the one-shot all-reduces are the only fabric cost in decode.
 
 ### r6v against v1.0.0
 
@@ -742,7 +871,7 @@ back: `./dsv41.sh stop`, `git checkout v1.0.0`, start from that tag's own `.env.
 
 | Component | License | In this repo? |
 |---|---|---|
-| This repository's scripts, tests, bench client, docs, `docker/0001-*.patch` to `docker/0006-*.patch` and `docker/0008-*.patch` | Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)) | yes |
+| This repository's scripts, tests, bench client, docs, `docker/0001-*.patch` to `docker/0006-*.patch`, `docker/0008-*.patch` and `docker/0009-*.patch` | Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)) | yes |
 | `docker/0007-*.patch`: spark-ds41f's vLLM 0184 by Christopher Owen (`03e8775c`), rebased by us | Apache-2.0 | yes |
 | spark-ds41f (`2dc95329`): build preparation, image recipe, patch series, memory-guard scripts; the scale-codes (`a250ace`) and profile-replays (`2ce3644`) overlays | Apache-2.0 | no: fetched at image build |
 | vLLM: Local Inference Lab fork (`19f2c20`) and the vLLM nightly runtime image | Apache-2.0 | no: fetched / pulled at image build |

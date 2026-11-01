@@ -1,0 +1,18 @@
+PASS golden_1 (548 tokens)
+PASS golden_2 (40 tokens)
+SKIP golden_3: roles ['latest_reminder'] are not expressible in the OpenAI API
+SKIP golden_4: roles ['latest_reminder'] are not expressible in the OpenAI API
+SKIP golden_5: image case (covered live by api_conformance image_input)
+PASS chat_mode (19 tokens)
+PASS thinking_default_effort (44 tokens)
+PASS effort_low (44 tokens)
+PASS effort_high (44 tokens)
+PASS effort_max (44 tokens)
+PASS effort_30 (44 tokens)
+PASS effort_alias_minimal (44 tokens)
+PASS effort_alias_medium (44 tokens)
+PASS effort_alias_xhigh (44 tokens)
+PASS namespaced_tools (319 tokens)
+PASS tool_loop_thinking (358 tokens)
+PASS multi_turn_mid_system (50 tokens)
+OK
