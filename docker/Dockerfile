@@ -102,7 +102,7 @@ ARG CUTLASS_REVISION=cb4247394dd82148787aed73e5dc7cef33cbf862
 ARG CUTLASS_RELEASE_TAG=v4.7.1
 
 # Ours, applied in this order after his vLLM series (Apache-2.0, this repository). docker/ must hold exactly
-# these patches, DSV41_VLLM_POST_OVERLAY_PATCHES, LINEAR_BUDGET_PATCH and KV_PERSIST_PATCH below.
+# these patches, DSV41_VLLM_POST_OVERLAY_PATCHES, LINEAR_BUDGET_PATCH, KV_PERSIST_PATCH and DIRECT_EXCHANGE_PATCH below.
 ARG DSV41_VLLM_PATCHES="0001-deepseek-v41-reasoning-effort-minimal-medium.patch 0002-model-loader-weight-snapshots.patch"
 
 # Then Christopher Owen's lossless MoE scale-codes overlay (spark-ds41f experiments/2026-10-18-scale-codes,
@@ -160,10 +160,19 @@ ARG LINEAR_BUDGET_TREE=0e9522300cd782c328ce4c7e053f55c99008a4c7
 # Then ours (Apache-2.0, this repository): the prefix KV cache persists across restarts. With
 # DSV41_KV_PERSIST=1 (default 0) `POST /v1/dsv41/kv_snapshot` saves every rank's KV backing buffer and the
 # scheduler's prefix-cache table under /cache/dsv41/kv-snapshots, and the next start restores them after
-# warmup, on every rank or none. DSV41_VLLM_PATCH_HEAD/TREE are the serving vLLM's head and tree after it.
+# warmup, on every rank or none. KV_PERSIST_PATCH_HEAD/TREE are the head and tree after it.
 ARG KV_PERSIST_PATCH=0008-v1-engine-persistent-prefix-kv-cache.patch
-ARG DSV41_VLLM_PATCH_HEAD=97a1e5068fada891c2016ce7e0e3193e872a909e
-ARG DSV41_VLLM_TREE=675d178dfd069b22dcfbdb44e3e8da73854e1a43
+ARG KV_PERSIST_PATCH_HEAD=97a1e5068fada891c2016ce7e0e3193e872a909e
+ARG KV_PERSIST_TREE=675d178dfd069b22dcfbdb44e3e8da73854e1a43
+
+# Then ours (Apache-2.0, this repository): at four ranks the rank-order reduce-scatter's chunk exchange and
+# PyNCCL's all_to_all_rows relay the opposite rank's rows through a neighbour only on spark-ds41f's switchless
+# ring (SPARKNET_ROCE_TOPOLOGY=ring4); on a switch every rank exchanges with every other directly, in one group.
+# Only bytes move, so outputs are bit-identical. DSV41_VLLM_PATCH_HEAD/TREE are the serving vLLM's head and
+# tree after it.
+ARG DIRECT_EXCHANGE_PATCH=0009-deepseek-v41-direct-exchange-on-switched-fabric.patch
+ARG DSV41_VLLM_PATCH_HEAD=ded568920f51901bc9d9b0e7853ebcb9945b02d2
+ARG DSV41_VLLM_TREE=21153d2e77f8f5d1375b73f9603d7c8b86361d8b
 
 # Compile parallelism: spark-ds41f sizes jobs from MemAvailable (8 GiB per job, at most 10, two NVCC
 # threads each); on a GB10's 20 cores that is 8.
@@ -391,11 +400,14 @@ ARG LINEAR_BUDGET_PATCH
 ARG LINEAR_BUDGET_PATCH_HEAD
 ARG LINEAR_BUDGET_TREE
 ARG KV_PERSIST_PATCH
+ARG KV_PERSIST_PATCH_HEAD
+ARG KV_PERSIST_TREE
+ARG DIRECT_EXCHANGE_PATCH
 ARG DSV41_VLLM_PATCH_HEAD
 ARG DSV41_VLLM_TREE
 COPY docker/*.patch /work/dsv41/
 RUN set -eux; \
-    test "$(cd /work/dsv41 && LC_ALL=C ls | tr '\n' ' ')" = "$DSV41_VLLM_PATCHES $DSV41_VLLM_POST_OVERLAY_PATCHES $LINEAR_BUDGET_PATCH $KV_PERSIST_PATCH "; \
+    test "$(cd /work/dsv41 && LC_ALL=C ls | tr '\n' ' ')" = "$DSV41_VLLM_PATCHES $DSV41_VLLM_POST_OVERLAY_PATCHES $LINEAR_BUDGET_PATCH $KV_PERSIST_PATCH $DIRECT_EXCHANGE_PATCH "; \
     cd /work/build/src/vllm; \
     test "$(git rev-parse HEAD)" = "$VLLM_PATCH_HEAD"; \
     for patch in $DSV41_VLLM_PATCHES; do \
@@ -447,6 +459,10 @@ RUN set -eux; \
     test "$(git rev-parse HEAD)" = "$LINEAR_BUDGET_PATCH_HEAD"; \
     git -c user.name="Justin Casey" -c user.email="4348807+justincasey@users.noreply.github.com" \
       -c commit.gpgsign=false am --quiet --committer-date-is-author-date "/work/dsv41/$KV_PERSIST_PATCH"; \
+    test "$(git rev-parse 'HEAD^{tree}')" = "$KV_PERSIST_TREE"; \
+    test "$(git rev-parse HEAD)" = "$KV_PERSIST_PATCH_HEAD"; \
+    git -c user.name="Justin Casey" -c user.email="4348807+justincasey@users.noreply.github.com" \
+      -c commit.gpgsign=false am --quiet --committer-date-is-author-date "/work/dsv41/$DIRECT_EXCHANGE_PATCH"; \
     git diff --check "$VLLM_PATCH_HEAD" HEAD; \
     test -z "$(git status --porcelain --untracked-files=all)"; \
     test "$(git rev-parse 'HEAD^{tree}')" = "$DSV41_VLLM_TREE"; \
@@ -905,9 +921,10 @@ ARG LINEAR_BUDGET_PATCH
 ARG LINEAR_BUDGET_ADAPTIVE_VERIFICATION_SHA256
 ARG LINEAR_BUDGET_SPECULATIVE_SHA256
 ARG KV_PERSIST_PATCH
+ARG DIRECT_EXCHANGE_PATCH
 
 LABEL org.opencontainers.image.title="dsv41-1017-ds41f" \
-      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on a four-DGX-Spark RoCE ring: spark-ds41f r6w plus the dsv41-1017 patches (reasoning-effort aliases, weight snapshots, vLLM #60945 and #61161 block verification fixes, CED decoder skip of unread prefill chunks, no DSpark MTP buffer, persistent prefix KV cache), spark-ds41f's MoE scale-codes overlay and its DSpark draft budget by a fixed linear step cost (r6x's vLLM 0184)" \
+      org.opencontainers.image.description="DeepSeek-V4.1-Flash-1017, TP4 on four DGX Sparks over a RoCE ring or switch: spark-ds41f r6w plus the dsv41-1017 patches (reasoning-effort aliases, weight snapshots, vLLM #60945 and #61161 block verification fixes, CED decoder skip of unread prefill chunks, no DSpark MTP buffer, persistent prefix KV cache, direct exchange on a switch), spark-ds41f's MoE scale-codes overlay and its DSpark draft budget by a fixed linear step cost (r6x's vLLM 0184)" \
       org.opencontainers.image.licenses="Apache-2.0" \
       local.dsv41.engine="spark-ds41f r6w" \
       local.dsv41.spark-ds41f.upstream="${SPARK_DS41F_UPSTREAM}" \
@@ -922,6 +939,7 @@ LABEL org.opencontainers.image.title="dsv41-1017-ds41f" \
       local.dsv41.vllm.linear-budget.overlay-revision="${LINEAR_BUDGET_OVERLAY_REVISION}" \
       local.dsv41.vllm.linear-budget.patch="${LINEAR_BUDGET_PATCH}" \
       local.dsv41.vllm.kv-persist.patch="${KV_PERSIST_PATCH}" \
+      local.dsv41.vllm.direct-exchange.patch="${DIRECT_EXCHANGE_PATCH}" \
       local.dsv41.vllm.patch-head="${DSV41_VLLM_PATCH_HEAD}" \
       local.dsv41.vllm.tree="${DSV41_VLLM_TREE}"
 

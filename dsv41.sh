@@ -64,7 +64,7 @@ unset _CALLER _k _v _line
 : "${MODEL_NAME:=DeepSeek-V4.1-Flash-1017}"
 : "${CHECKSUMS:=config/DeepSeek-V4.1-Flash-1017.sha256}"
 : "${HF_BIN:=/home/spark/venvs/hf/bin/hf}"
-: "${IMAGE:=dsv41-1017-ds41f:r6w}"
+: "${IMAGE:=dsv41-1017-ds41f:r6w-direct}"   # r6w + docker/0009 (direct exchange on a switch); :r6w is the build before it
 : "${BUILD_DIR:=/home/spark/build/dsv41-1017-ds41f}"
 : "${CACHE_DIR:=/home/spark/.cache/dsv41-ds41f}"   # mounted at /cache: JIT, TileLang, DSpark cost curves
 : "${CONTAINER:=dsv41-1017}"

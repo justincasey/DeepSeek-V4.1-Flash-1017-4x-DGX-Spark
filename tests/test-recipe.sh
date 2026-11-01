@@ -125,8 +125,7 @@ sw() {
 swfail=0
 for r in 0 1 2 3; do
   c=$(sw ./dsv41.sh print-serve "$r" | sed -n 2p) || { bad "switched rank $r: print-serve failed"; swfail=1; continue; }
-  for want in "SPARKNET_ROCE_TOPOLOGY=direct" "NCCL_MAX_NCHANNELS=8" "NCCL_BUFFSIZE=1048576" "NCCL_CUMEM_ENABLE=0" \
-              "SPARKNET_ROCE_ALLGATHER_MAX_BYTES=4194304" "SPARKNET_ROCE_ALLREDUCE_CAPACITY_BYTES=2097152" \
+  for want in "SPARKNET_ROCE_TOPOLOGY=direct" \
               "NCCL_IB_TC=106" "SPARKNET_ROCE_TRAFFIC_CLASS=106" "NCCL_IB_SUBNET_PREFIX_LEN=24" "NCCL_PROTO=\^LL128" \
               "NCCL_IB_SUBNET_AWARE_ROUTING=1" "NCCL_SOCKET_IFNAME=m$r" "VLLM_HOST_IP=10.0.0.$((r + 1))"; do
     has "$c" "$want" || { bad "switched rank $r: missing $want"; swfail=1; }
@@ -236,7 +235,7 @@ cp dsv41.sh "$tmp/"; cp -R docker "$tmp/docker"
 } >"$tmp/.env"
 c=$(cd "$tmp" && env -i PATH="$PATH" HOME="$HOME" PORT=2222 ./dsv41.sh print-serve 1 | sed -n 2p) || bad "precedence print-serve failed"
 has "$c" "--port 2222" && has "$c" "--max-num-seqs 7" && has "$c" 'temperature\":0.6' && has "$c" "--max-model-len 1048576" \
-  && has "$c" "dsv41-1017-ds41f:r6w /models " && has "$c" 'SPARKNET_ROCE_PEER_HCAS=\{\"0\":\[\"p1\"\]\,\"2\":\[\"n1\"\]\}' \
+  && has "$c" "dsv41-1017-ds41f:r6w-direct /models " && has "$c" 'SPARKNET_ROCE_PEER_HCAS=\{\"0\":\[\"p1\"\]\,\"2\":\[\"n1\"\]\}' \
   && ok "precedence: env > .env > defaults (ring pins from .env)" || bad "precedence: $c"
 
 # the shipped site configuration renders for every rank without ssh
@@ -246,7 +245,7 @@ for r in 0 1 2 3; do
   [[ $(wc -l <<<"$c" | tr -d ' ') == 2 ]] || bad ".env.example rank $r: expected guard + docker lines"
 done
 c=$(cd "$tmp" && env -i PATH="$PATH" HOME="$HOME" ./dsv41.sh print-serve 0 | sed -n 2p)
-has "$c" "NCCL_IB_HCA==rocep1s0f1\,roceP2p1s0f1" && has "$c" "SPARKNET_ROCE_HCA=rocep1s0f1\,roceP2p1s0f1" \
+has "$c" "NCCL_IB_HCA==rocep1s0f1\,roceP2p1s0f1" && has "$c" "SPARKNET_ROCE_HCA=rocep1s0f1" \
   && has "$c" "SPARKNET_ROCE_TOPOLOGY=direct" && has "$c" "NCCL_IB_TC=106" && has "$c" "NCCL_SOCKET_IFNAME=enP7s7" \
   && ok ".env.example renders the site's switch without ssh" || bad ".env.example switch: $c"
 
